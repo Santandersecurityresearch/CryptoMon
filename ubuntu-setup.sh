@@ -45,6 +45,3 @@ sudo systemctl enable mongod
 sudo systemctl start mongod
 
 apt-get install -y python3-tinydb
-
-
-apt-get install -y python3-tinydb
