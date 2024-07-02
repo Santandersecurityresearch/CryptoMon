@@ -13,8 +13,8 @@ __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
 
-from cryptomon.bpf import bpf_txt
-from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT
+from cryptomon.bpf import bpf_ipv4_tls_txt
+from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
 from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version, decimal_to_human
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
@@ -31,10 +31,13 @@ TCP_HDR_LEN = 20
 
 
 class CryptoMon(object):
-    def __init__(self, iface="enp0s1", fapiapp: FastAPI = "", mongodb=False, settings=""):
+    def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
+                 mongodb=False, settings="",
+                 bpf_code=bpf_ipv4_tls_txt, pparser="tls_parser"):
         if not settings:
             raise Exception("No settings provided... Aborting.")
-        self.b = BPF(text=bpf_txt)
+        self.pparser = pparser
+        self.b = BPF(text=bpf_code)
         self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
         BPF.attach_raw_socket(self.fn, iface)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
@@ -55,7 +58,13 @@ class CryptoMon(object):
         # 20 bytes - IPv4 header
         # 20-40 bytes - TCP header;
         skb_event = ct.cast(data, ct.POINTER(SkbEvent)).contents
-        data = self.parse_crypto(skb_event)
+        match self.pparser:
+            case "tls_parser":
+                data = self.tls_parse_crypto(skb_event)
+            case "ssh_parser":
+                data = self.ssh_parse_crypto(skb_event)
+            case _:
+                data = skb_event
         self.handle_data(data)
         
     def handle_data(self, data_object):
@@ -82,7 +91,7 @@ class CryptoMon(object):
             await asyncio.sleep(1)
             self.b.perf_buffer_poll()
         
-    def parse_crypto(self, skb_event):
+    def tls_parse_crypto(self, skb_event):
         data = {}
         ETH_HDR_LEN = 14
         IP4_HDR_LEN = 20
@@ -177,3 +186,38 @@ class CryptoMon(object):
                     data['tls']['kex_group'] = TLS_GROUPS_DICT[kex_group]
                 ext_offset += ext_len + 4
         return data
+    
+    def ssh_parse_crypto(self, skb_event):
+        data = {}
+        ETH_HDR_LEN = 14
+        IP4_HDR_LEN = 20
+        TCP_HDR_LEN = 20
+
+        net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
+        full_packet_len = lst2int(skb_event.raw[16:18])
+        tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
+        ssh_offset = net_packet_len + tcp_hdr_len
+        srcdst = skb_event.magic  # we've put the two addresses in this value, src:dst order.
+        src = lst2int(skb_event.raw[26:30])
+        dst = lst2int(skb_event.raw[30:34])
+        data['eth'] = {}
+        data['eth']['src'] = {}
+        data['eth']['dst'] = {}
+        data['eth']['src']['ipv4'] = decimal_to_human(str(src))
+        data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
+        data['ssh'] = {}
+        ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
+        ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,
+                             # and message code then 16 bytes for SSH cookie
+        print(ssh_offset)
+        for sec in SSH_SECTIONS:
+            if not (ssh_offset < full_packet_len):
+                break
+            sec_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
+            ssh_offset += 4
+            str_block = skb_event.raw[ssh_offset:ssh_offset+sec_len]  # get the block of text
+            str_raw = "".join([chr(x) for x in str_block])
+            data[sec] = str_raw.split(',')  # split on commas
+            ssh_offset += sec_len
+        return data
+

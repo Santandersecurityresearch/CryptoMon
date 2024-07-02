@@ -1,7 +1,7 @@
 # 
 
 import csv
-import os 
+import os
 
 TLS_DICT = {}
 
@@ -25,8 +25,7 @@ TLS_DICT = get_tls_from_csv(cwd+'cryptomon/tls_ciphersuites.csv')
 TLS_GROUPS_DICT = {(0x00, 0x17): "secp256r1", (0x00, 0x18): "secp384r1", (0x00, 0x19): "secp521r1", 
                    (0x00, 0x1D): "x25519", (0x00, 0x1E): "x448",
                    (0x01, 0x00): "ffdhe2048", (0x01, 0x01): "ffdhe3072", (0x01, 0x02): "ffdhe4096", 
-                   (0x01, 0x03): "ffdhe6144", (0x01, 0x04): "ffdhe8192"
-                  }
+                   (0x01, 0x03): "ffdhe6144", (0x01, 0x04): "ffdhe8192"}
 
 
 # TLSv1.3 Signature Algorithms (ext sec 13)
@@ -63,11 +62,17 @@ TLS_SIGALG_DICT = {(0x02, 0x01): "rsa_pkcs1_sha1",
                    (0x08, 0x0B): "rsa_pss_pss_sha512",
                    (0x08, 0x1A): "ecdsa_brainpoolP256r1tls13_sha256",
                    (0x08, 0x1B): "ecdsa_brainpoolP384r1tls13_sha384",
-                   (0x08, 0x1C): "ecdsa_brainpoolP512r1tls13_sha512"
-                }
+                   (0x08, 0x1C): "ecdsa_brainpoolP512r1tls13_sha512"}
 
 
-TLS_HASH_ALGS = {1: "MD5", 2: "SHA1", 3: "SHA224", 4: "SHA256", 5: "SHA384", 6: "SHA512"}
+TLS_HASH_ALGS = {1: "MD5", 2: "SHA1", 3: "SHA224", 4: "SHA256",
+                 5: "SHA384", 6: "SHA512"}
 
 
-TLS_SIGN_ALGS = {1: "RSA", 2: "DSA", 3: "ECDSA", 7: "ed25519", 8: "ed448", 64: "gostr34102012_256", 65: "gostr34102012_512"}
+TLS_SIGN_ALGS = {1: "RSA", 2: "DSA", 3: "ECDSA", 7: "ed25519", 8: "ed448",
+                 64: "gostr34102012_256", 65: "gostr34102012_512"}
+
+
+SSH_SECTIONS = ['KEXalgs', 'ServerHostKeyAlgos', "EncryptionAlgosClient2Server",
+                "EncryptionAlgosServer2Client", "MACalgosClient2Server",
+                "MACalgosServer2Client"]
