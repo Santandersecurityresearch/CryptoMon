@@ -2,20 +2,24 @@ import uuid
 from typing import List, Optional, Union, Any, Dict, AnyStr, List
 from pydantic import BaseModel, Field
 
-# JSON is really just arrays and objects that look like this...
+
+# JSON is really just arrays and objects that look like this...
 JSONStructure = Union[List[Any], Dict[AnyStr, Any]]
+
 
 class IPModel(BaseModel):
     ipv4: str = "0.0.0.0"
+
 
 class EthModel(BaseModel):
     src: dict = IPModel() 
     dst: dict = IPModel()
 
+
 class TLSDataModel(BaseModel):
     id: str = Field(default_factory=uuid.uuid4, alias="_id")
     ptype: Optional[str] = Field(...)
-    eth: str = EthModel() # packet type
+    eth: str = EthModel()  # packet type
     tls: Optional[dict] = Field(...)
 
     class Config:

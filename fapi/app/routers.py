@@ -10,13 +10,15 @@ router = APIRouter()
 
 
 @router.post("/", response_description="Add new data")
-async def create_task(request: Request, data: TLSDataModel = Body(...)):
+async def create_task(request: Request,
+                      data: TLSDataModel = Body(...)):
     data = jsonable_encoder(data)
     new_data = await request.app.mongodb["cryptomon"].insert_one(data)
     created_data = await request.app.mongodb["cryptomon"].find_one(
         {"_id": new_data.inserted_id}
     )
-    return JSONResponse(status_code=status.HTTP_201_CREATED, content=created_data)
+    return JSONResponse(status_code=status.HTTP_201_CREATED,
+                        content=created_data)
 
 
 @router.get("/", response_description="List all packet captures")
@@ -37,7 +39,8 @@ async def show_data(id: str, request: Request):
 
 
 @router.put("/{id}", response_description="Update TLS Data trace")
-async def update_task(id: str, request: Request, data: UpdateTLSDataModel = Body(...)):
+async def update_task(id: str, request: Request,
+                      data: UpdateTLSDataModel = Body(...)):
     data = {k: v for k, v in data.dict().items() if v is not None}
     if len(data) >= 1:
         update_result = await request.app.mongodb["cryptomon"].update_one(
@@ -64,7 +67,9 @@ async def delete_data(id: str, request: Request):
 
 
 @router.get("/count/", response_description="Count with search")
-async def count_data(request: Request, k: Union[str, None] = None, v: Union[str, None] = None):
+async def count_data(request: Request,
+                     k: Union[str, None] = None,
+                     v: Union[str, None] = None,):
     if not k or not v:
         data = await request.app.mongodb["cryptomon"].count_documents()
     else:
@@ -73,7 +78,10 @@ async def count_data(request: Request, k: Union[str, None] = None, v: Union[str,
         return data
     raise HTTPException(status_code=404, detail="Data count not possible")
 
-@router.post("/count/", response_description="Count with search, e.g.: {\"ptype\":\"server\", \"tls.ciphersuite\":\"TLS_AES_128_GCM_SHA256\"}")
+@router.post("/count/", 
+             response_description="Count with search, \
+                e.g.: {\"ptype\":\"server\", \
+                    \"tls.ciphersuite\":\"TLS_AES_128_GCM_SHA256\"}")
 async def count_data_with_param(request: Request, 
                                 d: JSONStructure = Body(...)):
     data = jsonable_encoder(d)
