@@ -33,9 +33,11 @@ TCP_HDR_LEN = 20
 class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
-                 bpf_code=bpf_ipv4_txt):
+                 bpf_code=bpf_ipv4_txt,
+                 data_tag=""):
         if not settings:
             raise Exception("No settings provided... Aborting.")
+        self.data_tag = data_tag if data_tag else ""
         self.b = BPF(text=bpf_code)
         self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
         BPF.attach_raw_socket(self.fn, iface)
@@ -67,6 +69,9 @@ class CryptoMon(object):
         self.handle_data(data)
         
     def handle_data(self, data_object):
+        # add tag
+        if self.data_tag:
+            data_object['tag'] = self.data_tag
         # add timestamp
         data_object['ts'] = dt.datetime.now().timestamp()
         if self.fapi_on:

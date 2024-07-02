@@ -40,7 +40,8 @@ if __name__ == "__main__":
     args = parse_argz()
     cm = CryptoMon(iface=args.interface,
                    mongodb=True,
-                   settings=settings,)  # set packet parser
+                   settings=settings,
+                   data_tag="")
     loop = asyncio.get_event_loop()
     loop.create_task(cm.run_async())
     loop.run_forever()
