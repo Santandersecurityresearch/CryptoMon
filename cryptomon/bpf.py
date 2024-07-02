@@ -50,7 +50,12 @@ int crypto_monitor(struct __sk_buff *skb)
     pass_value = pass_value << 32;
     pass_value = pass_value + daddr;
 
-    if (dport != 0x1BB && sport != 0x1BB){ //filter for port 443, SSL
+    // here's where we filter for the ports we are interested in 
+    if (dport != 443   && sport != 443   && // port 443
+        dport != 3389  && sport != 3389  && // port 3389 (RDP)
+        dport != 8080  && sport != 8080  && // port 8080
+        dport != 8443  && sport != 8443)    // port 8443
+    {
         return -1; // return -1 to keep packet, return 0 to drop packet.
     }
 
@@ -71,7 +76,9 @@ int crypto_monitor(struct __sk_buff *skb)
     // we are only interested in packets that are
     // client- or server-side TLS HELLO packets
     unsigned short hello_check = load_byte(skb, payload_offset);
-    if (hello_check != 0x16){
+    unsigned short hello_tls_1 = load_byte(skb, payload_offset+1);
+    unsigned short hello_tls_2 = load_byte(skb, payload_offset+2);
+    if (hello_check != 0x16 || hello_tls_1 != 3 || hello_tls_2 != 1){
     // TLS 'helo' data is heralded by a value of '22'.
         return -1;
     }
