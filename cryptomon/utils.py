@@ -43,7 +43,7 @@ def get_tls_version(in_lst):
             return "TLSv1.2"
         case 4:
             return "TLSv1.3"
-    return "ERR"
+    return ''.join('{:02x}'.format(x) for x in in_lst)
 
 
 def lst2str(in_lst):
