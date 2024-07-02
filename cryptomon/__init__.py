@@ -18,6 +18,7 @@ from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
 from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version, decimal_to_human
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
+from tinydb import TinyDB
 
 import datetime as dt
 
@@ -49,6 +50,10 @@ class CryptoMon(object):
         if mongodb:
             self.mongodb_client = AsyncIOMotorClient(settings.DB_URL)
             self.mongodb = self.mongodb_client[settings.DB_NAME]
+        else:
+            self.mongodb = False
+        if not fapiapp and not mongodb:
+            self.tinydb = TinyDB("cryptomon.json")
         
     def get_ebpf_data(self, cpu, data, size):
         class SkbEvent(ct.Structure):
@@ -79,8 +84,9 @@ class CryptoMon(object):
         elif self.mongodb:
             self.mongodb["cryptomon"].insert_one(data_object)
         else:
-            print(data_object)
-            print("================================")
+            self.tinydb.insert(data_object)
+            # print(data_object)
+            # print("================================")
 
     def run(self):
         while True:
