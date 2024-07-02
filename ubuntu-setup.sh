@@ -21,6 +21,13 @@ do
     sudo ln -s $path ${path%-*} 
 done 
 
+# TODO - find out why this doesn't work -MC
+sudo snap install --devmode bpftrace
+
+# uname -r returns kernel version
+# need linux-tools for kernel specific
+apt-get install -y linux-tools-$(uname -r)
+
 # api stuff
 apt-get install -y python3-pymongo
 apt-get install -y python3-fastapi
@@ -37,11 +44,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable mongod
 sudo systemctl start mongod
 
-# TODO - find out why this doesn't work -MC
-sudo snap install --devmode bpftrace
+apt-get install -y python3-tinydb
 
-# uname -r returns kernel version
-# need linux-tools for kernel specific
-apt-get install -y linux-tools-$(uname -r)
 
 apt-get install -y python3-tinydb
