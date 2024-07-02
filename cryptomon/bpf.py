@@ -4,6 +4,8 @@ bpf_txt = """
 #include <bcc/proto.h>
 #include <linux/bpf.h>
 
+
+// here are our protocol constrants
 #define IP_TCP 6
 #define IP_UDP 17
 #define IP_ICMP 1
@@ -11,17 +13,22 @@ bpf_txt = """
 
 BPF_PERF_OUTPUT(skb_events);
 
+// this is our ethernet header
 struct eth_hdr {
     unsigned char   h_dest[ETH_ALEN];
     unsigned char   h_source[ETH_ALEN];
     unsigned short  h_proto;
 };
 
+// this is the main program that monitors all crypto handshakes
+// when each packet is received, it will be processed by this function
+
+
 int crypto_monitor(struct __sk_buff *skb)
 {
-    u64 magic = 0xfaceb00c;
+    u64 magic = 0xfaceb00c; // our magic number
     u8 *cursor = 0;
-    u32 saddr, daddr;
+    u32 saddr, daddr; // source and destination port
     unsigned short sport, dport;
     long prts = 0;
     long one = 1;
@@ -32,7 +39,7 @@ int crypto_monitor(struct __sk_buff *skb)
     struct tcp_t *tcp = cursor_advance(cursor, sizeof(*tcp));
     if (ip->ver != 4)
         return 0;
-    if (ip->nextp != IP_TCP)
+    if (ip->nextp != IP_TCP) // check what the protocol is
     {
         if (ip -> nextp != IP_UDP)
         {
@@ -43,6 +50,7 @@ int crypto_monitor(struct __sk_buff *skb)
 
     saddr = ip -> src;
     daddr = ip -> dst;
+    // extract the source and destination ports
     sport = tcp -> src_port;
     dport = tcp -> dst_port;
 
