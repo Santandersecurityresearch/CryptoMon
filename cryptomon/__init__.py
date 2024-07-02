@@ -154,7 +154,7 @@ class CryptoMon(object):
             csuite_offset = offset + 2
             proposed_suites = skb_event.raw[csuite_offset:csuite_offset + len_ciphersuite_list]
             ciphersuites = list(zip(proposed_suites[::2], proposed_suites[1::2]))
-            data['tls']['ciphersuites'] = [TLS_DICT[x] for x in ciphersuites]
+            data['tls']['ciphersuites'] = [TLS_DICT.get(x, 'Reserved') for x in ciphersuites]
             ext_offset = csuite_offset + len_ciphersuite_list
             ext_offset = ext_offset + 1 + lst2int(skb_event.raw[ext_offset:ext_offset+1])  # compression method len, 1 byte
             ext_offset += 2  # extension length bytes
