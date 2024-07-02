@@ -52,8 +52,11 @@ def lst2str(in_lst):
 
 def decimal_to_human(input_value):
     try:
-        decimal_ip = int(input_value)
-        ip_string = str(ipaddress.IPv4Address(decimal_ip))
+        if isinstance(input_value, tuple):  # Check if input_value is a tuple which means this is an IPv6 address
+            ip_string = str(ipaddress.IPv6Address(input_value))
+        else:  # Assume IPv4
+            decimal_ip = int(input_value)
+            ip_string = str(ipaddress.IPv4Address(decimal_ip))
         return ip_string
     except ValueError:
         return "Invalid input"

@@ -27,6 +27,7 @@ import asyncio
 
 ETH_HDR_LEN = 14
 IP4_HDR_LEN = 20
+IP6_HDR_LEN = 40
 TCP_HDR_LEN = 20
 
 
