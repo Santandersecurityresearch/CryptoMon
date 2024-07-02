@@ -56,7 +56,7 @@ Where `<iface>` should be replaecd with the network interface to be monitored (`
 
 If you have installed `cryptomon` as a service, then you do not need to run the first line. To check the monitor is working you can run `db.cryptomon.count({})` from `mongosh` to see if the record count is increasing. 
 
-## FastAPI 
+## FastAPI 
 
 To access the FastAPI documentation go to `http://0.0.0.0:8000/docs` to find the documentation for the backend API.
 
