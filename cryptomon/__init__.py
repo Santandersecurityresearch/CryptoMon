@@ -232,4 +232,3 @@ class CryptoMon(object):
             data['ssh'][sec] = str_raw.split(',')  # split on commas
             ssh_offset += sec_len
         return data
-
