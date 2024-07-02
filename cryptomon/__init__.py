@@ -183,7 +183,7 @@ class CryptoMon(object):
                     group_offset += 2
                     for i in range(0, group_list_len, 2):
                         supported_groups.append(tuple(skb_event.raw[group_offset+i:group_offset+i+2]))
-                    data['tls']['groups'] = [TLS_GROUPS_DICT[x] for x in supported_groups]
+                    data['tls']['groups'] = [TLS_GROUPS_DICT.get(x, 'Reserved') for x in supported_groups]
                 if ext_type == 13: # supported Signature Algorithms
                     sigalg_offset = ext_offset + 4
                     sigalt_list_len = lst2int(skb_event.raw[sigalg_offset:sigalg_offset + 2])
