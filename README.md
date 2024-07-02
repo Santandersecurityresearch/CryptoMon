@@ -34,7 +34,7 @@ export DB_URL="mongodb://cryptomonUser:<password>@<uri>:27017/cryptomon?retryWri
 export DB_NAME="cryptomon"
 ```
 
-**OR** if you are using MongoDB Atlast or some other cloud service:
+**OR** if you are using MongoDB Atlas or some other cloud service:
 
 ```bash
 export DB_URL="mongodb+srv://<Connection URL>/cryptomon?retryWrites=true&w=majority"
