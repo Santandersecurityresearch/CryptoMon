@@ -1,6 +1,6 @@
 # CryptoMon
 
-Network Cryptography Monitor
+Network Cryptography Monitor - using eBPF, written in python.
 
 **NB - This code is pre-production and is intended for demonstration purposes.**
 
