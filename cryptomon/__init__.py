@@ -194,6 +194,9 @@ class CryptoMon(object):
         TCP_HDR_LEN = 20
 
         net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
+        src_prt = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        dst_prt = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
+        data['ptype'] = "server" if src_prt == 22 else "client"
         full_packet_len = lst2int(skb_event.raw[16:18])
         tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
         ssh_offset = net_packet_len + tcp_hdr_len
@@ -208,8 +211,8 @@ class CryptoMon(object):
         data['ssh'] = {}
         ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
         ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,
-                             # and message code then 16 bytes for SSH cookie
-        print(ssh_offset)
+                                          # and message code then 16 bytes for SSH cookie
+
         for sec in SSH_SECTIONS:
             if not (ssh_offset < full_packet_len):
                 break
@@ -217,7 +220,7 @@ class CryptoMon(object):
             ssh_offset += 4
             str_block = skb_event.raw[ssh_offset:ssh_offset+sec_len]  # get the block of text
             str_raw = "".join([chr(x) for x in str_block])
-            data[sec] = str_raw.split(',')  # split on commas
+            data['ssh'][sec] = str_raw.split(',')  # split on commas
             ssh_offset += sec_len
         return data
 

@@ -48,7 +48,7 @@ if __name__ == "__main__":
     for i in args.modules:
         if i not in MOD_LOOKUP.keys():
             raise Exception("Invalid module!")
-        a,b = MOD_LOOKUP[i]
+        a, b = MOD_LOOKUP[i]
         task_list.append(CryptoMon(iface=args.interface,
                                    mongodb=True,
                                    settings=settings,
