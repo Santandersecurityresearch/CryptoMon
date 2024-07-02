@@ -13,7 +13,7 @@ __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
 
-from cryptomon.bpf import bpf_ipv4_tls_txt
+from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
 from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version, decimal_to_human
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -33,10 +33,9 @@ TCP_HDR_LEN = 20
 class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
-                 bpf_code=bpf_ipv4_tls_txt, pparser="tls_parser"):
+                 bpf_code=bpf_ipv4_txt):
         if not settings:
             raise Exception("No settings provided... Aborting.")
-        self.pparser = pparser
         self.b = BPF(text=bpf_code)
         self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
         BPF.attach_raw_socket(self.fn, iface)
@@ -58,10 +57,10 @@ class CryptoMon(object):
         # 20 bytes - IPv4 header
         # 20-40 bytes - TCP header;
         skb_event = ct.cast(data, ct.POINTER(SkbEvent)).contents
-        match self.pparser:
-            case "tls_parser":
+        match skb_event.magic:
+            case 1:
                 data = self.tls_parse_crypto(skb_event)
-            case "ssh_parser":
+            case 2:
                 data = self.ssh_parse_crypto(skb_event)
             case _:
                 data = skb_event
