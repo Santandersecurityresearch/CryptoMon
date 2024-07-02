@@ -75,7 +75,8 @@ int crypto_monitor(struct __sk_buff *skb)
         unsigned short hello_check = load_byte(skb, payload_offset);
         unsigned short hello_tls_1 = load_byte(skb, payload_offset+1);
         unsigned short hello_tls_2 = load_byte(skb, payload_offset+2);
-        if (hello_check == 0x16 && hello_tls_1 == 3 && hello_tls_2 == 1){
+        if (hello_check == 0x16 && hello_tls_1 == 3 && 
+            (hello_tls_2 == 1 || hello_tls_2 == 2 || hello_tls_2 == 3 || hello_tls_2 == 4 )){
             // TLS 'helo' data is heralded by a value of '22'.
             pass_value = 1;
             skb_events.perf_submit_skb(skb, skb->len,

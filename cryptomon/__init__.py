@@ -201,16 +201,15 @@ class CryptoMon(object):
         data = {}
         ETH_HDR_LEN = 14
         IP4_HDR_LEN = 20
-        TCP_HDR_LEN = 20
+        # TCP_HDR_LEN = 20
 
         net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
         src_prt = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
-        dst_prt = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
+        # dst_prt = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
         data['ptype'] = "server" if src_prt == 22 else "client"
         full_packet_len = lst2int(skb_event.raw[16:18])
         tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
         ssh_offset = net_packet_len + tcp_hdr_len
-        srcdst = skb_event.magic
         src = lst2int(skb_event.raw[26:30])
         dst = lst2int(skb_event.raw[30:34])
         data['eth'] = {}
@@ -219,7 +218,7 @@ class CryptoMon(object):
         data['eth']['src']['ipv4'] = decimal_to_human(str(src))
         data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
         data['ssh'] = {}
-        ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
+        # ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
         ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,
                                           # and message code then 16 bytes for SSH cookie
 
