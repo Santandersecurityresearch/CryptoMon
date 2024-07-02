@@ -193,7 +193,7 @@ class CryptoMon(object):
                     data['tls']['sigalgs'] = parse_sigalgs(supported_sigalgs)
                 if ext_type == 51: # key share extension
                     kex_group = tuple(skb_event.raw[ext_offset+6:ext_offset+8])
-                    data['tls']['kex_group'] = TLS_GROUPS_DICT[kex_group]
+                    data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
                 ext_offset += ext_len + 4
         return data
     
