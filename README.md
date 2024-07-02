@@ -62,7 +62,9 @@ To access the FastAPI documentation go to `http://0.0.0.0:8000/docs` to find the
 
 ## Example Data
 
-A client capture example:
+### TLS Capture
+
+A TLS client capture example:
 
 ```json
 {
@@ -129,7 +131,7 @@ A client capture example:
 }
 ```
 
-A server hello capture example:
+A TLS server hello capture example:
 
 ```json
 {
@@ -148,5 +150,158 @@ A server hello capture example:
 },
 "ptype": "server",
 "ts": 1719848309.26233
+}
+```
+
+### SSH Capture
+
+Sample SSH Server capture:
+
+```json
+{
+"_id": "66840491591561a355709042",
+"ptype": "server",
+"eth": {
+    "src": {
+    "ipv4": "20.0.104.77"
+    },
+    "dst": {
+    "ipv4": "192.168.64.5"
+    }
+},
+"ssh": {
+    "KEXalgs": [
+    "curve25519-sha256",
+    "curve25519-sha256@libssh.org",
+    "ecdh-sha2-nistp256",
+    "ecdh-sha2-nistp384",
+    "ecdh-sha2-nistp521",
+    "sntrup761x25519-sha512@openssh.com",
+    "diffie-hellman-group-exchange-sha256",
+    "diffie-hellman-group16-sha512",
+    "diffie-hellman-group18-sha512",
+    "diffie-hellman-group14-sha256",
+    "kex-strict-s-v00@openssh.com"
+    ],
+    "ServerHostKeyAlgos": [
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+    "ecdsa-sha2-nistp256",
+    "ssh-ed25519"
+    ],
+    "EncryptionAlgosClient2Server": [
+    "chacha20-poly1305@openssh.com",
+    "aes128-ctr",
+    "aes192-ctr",
+    "aes256-ctr",
+    "aes128-gcm@openssh.com",
+    "aes256-gcm@openssh.com"
+    ],
+    "EncryptionAlgosServer2Client": [
+    "chacha20-poly1305@openssh.com",
+    "aes128-ctr",
+    "aes192-ctr",
+    "aes256-ctr",
+    "aes128-gcm@openssh.com",
+    "aes256-gcm@openssh.com"
+    ],
+    "MACalgosClient2Server": [
+    "umac-64-etm@openssh.com",
+    "umac-128-etm@openssh.com",
+    "hmac-sha2-256-etm@openssh.com",
+    "hmac-sha2-512-etm@openssh.com",
+    "hmac-sha1-etm@openssh.com",
+    "umac-64@openssh.com",
+    "umac-128@openssh.com",
+    "hmac-sha2-256",
+    "hmac-sha2-512",
+    "hmac-sha1"
+    ],
+    "MACalgosServer2Client": [
+    "umac-64-etm@openssh.com",
+    "umac-128-etm@openssh.com",
+    "hmac-sha2-256-etm@openssh.com",
+    "hmac-sha2-512-etm@openssh.com",
+    "hmac-sha1-etm@openssh.com",
+    "umac-64@openssh.com",
+    "umac-128@openssh.com",
+    "hmac-sha2-256",
+    "hmac-sha2-512",
+    "hmac-sha1"
+    ]
+},
+"ts": 1719927953.541072
+}
+```
+
+A sample SSH Client capture:
+
+```json
+{
+"_id": "66840492591561a355709043",
+"ptype": "client",
+"eth": {
+    "src": {
+    "ipv4": "192.168.64.5"
+    },
+    "dst": {
+    "ipv4": "20.0.104.77"
+    }
+},
+"ssh": {
+    "KEXalgs": [
+    "curve25519-sha256",
+    "curve25519-sha256@libssh.org",
+    "ecdh-sha2-nistp256",
+    "ecdh-sha2-nistp384",
+    "ecdh-sha2-nistp521",
+    "sntrup761x25519-sha512@openssh.com",
+    "diffie-hellman-group-exchange-sha256",
+    "diffie-hellman-group16-sha512",
+    "diffie-hellman-group18-sha512",
+    "diffie-hellman-group14-sha256",
+    "ext-info-c",
+    "kex-strict-c-v00@openssh.com"
+    ],
+    "ServerHostKeyAlgos": [
+    "ssh-ed25519-cert-v01@openssh.com",
+    "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+    "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+    "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+    "sk-ssh-ed25519-cert-v01@openssh.com",
+    "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+    "rsa-sha2-512-cert-v01@openssh.com",
+    "rsa-sha2-256-cert-v01@openssh.com",
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "sk-ssh-ed25519@openssh.com",
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+    "rsa-sha2-512",
+    "rsa-sha2-256"
+    ],
+    "EncryptionAlgosClient2Server": [
+    "chacha20-poly1305@openssh.com",
+    "aes128-ctr",
+    "aes192-ctr",
+    "aes256-ctr",
+    "aes128-gcm@openssh.com",
+    "aes256-gcm@openssh.com"
+    ],
+    "EncryptionAlgosServer2Client": [
+    "chacha20-poly1305@openssh.com",
+    "aes128-ctr",
+    "aes192-ctr",
+    "aes256-ctr",
+    "aes128-gcm@openssh.com",
+    "aes256-gcm@openssh.com"
+    ],
+    "MACalgosClient2Server": [
+    "umac-64-etm@openssh.com",
+    "umac-128-etm@openssh.com"
+    ]
+},
+"ts": 1719927954.565768
 }
 ```

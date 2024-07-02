@@ -16,7 +16,7 @@ Type=simple
 Restart=always
 WorkingDirectory=$(pwd)
 Environment="DB_URL=mongodb://cryptomonUser:<password>@<uri>:27017/cryptomon?retryWrites=true&w=majority"
-Environment="DB_NAME="cryptomon"
+Environment="DB_NAME=cryptomon"
 ExecStart=/usr/bin/python3 $(pwd)/cryptomon.py
 
 [Install]

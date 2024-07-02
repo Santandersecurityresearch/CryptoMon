@@ -18,6 +18,7 @@ __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
 
+import asyncio
 import argparse
 
 from fapi.config import settings
@@ -35,6 +36,13 @@ def parse_argz():
 
 
 if __name__ == "__main__":
+    task_list = []
     args = parse_argz()
-    cm = CryptoMon(iface=args.interface, mongodb=True, settings=settings)
-    cm.run()
+    cm = CryptoMon(iface=args.interface,
+                   mongodb=True,
+                   settings=settings,)  # set packet parser
+    loop = asyncio.get_event_loop()
+    loop.create_task(cm.run_async())
+    loop.run_forever()
+    # alternatively, run...
+    # cm.run()
