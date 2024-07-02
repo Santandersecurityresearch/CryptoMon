@@ -85,8 +85,8 @@ class CryptoMon(object):
             self.mongodb["cryptomon"].insert_one(data_object)
         else:
             self.tinydb.insert(data_object)
-            print(data_object)
-            print("================================")
+            # print(data_object)
+            # print("================================")
 
     def run(self):
         while True:
