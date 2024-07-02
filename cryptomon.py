@@ -38,20 +38,11 @@ def parse_argz():
 if __name__ == "__main__":
     task_list = []
     args = parse_argz()
-    # for i in args.modules:
-    #     if i not in MOD_LOOKUP.keys():
-    #         raise Exception("Invalid module!")
-    #     a, b = MOD_LOOKUP[i]
-    #     task_list.append(CryptoMon(iface=args.interface,
-    #                                mongodb=True,
-    #                                settings=settings,
-    #                                bpf_code=a,  # set bpf code block
-    #                                pparser=b))  # set packet parser
-    # loop = asyncio.get_event_loop()
-    # for t in task_list:
-    #     loop.create_task(t.run_async())
-    # loop.run_forever()
     cm = CryptoMon(iface=args.interface,
                    mongodb=True,
                    settings=settings,)  # set packet parser
-    cm.run()
+    loop = asyncio.get_event_loop()
+    loop.create_task(cm.run_async())
+    loop.run_forever()
+    # alternatively, run...
+    # cm.run()
