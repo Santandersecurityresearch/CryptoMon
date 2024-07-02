@@ -6,7 +6,7 @@ After=multi-user.target
 Type=simple
 Restart=always
 WorkingDirectory=/media/share
-Environment="DB_URL=mongodb://cryptomonUser:<password>@<uri>:27017/cryptomon?retryWrites=true&w=majority"
+Environment="DB_URL=mongodb://cmon:Password.1@localhost:27017/cryptomon?retryWrites=true&w=majority"
 Environment="DB_NAME=cryptomon"
 ExecStart=/usr/bin/python3 /media/share/cryptomon.py
 
