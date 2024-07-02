@@ -44,3 +44,4 @@ sudo snap install --devmode bpftrace
 # need linux-tools for kernel specific
 apt-get install -y linux-tools-$(uname -r)
 
+apt-get install -y python3-tinydb
