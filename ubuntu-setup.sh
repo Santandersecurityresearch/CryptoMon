@@ -14,6 +14,13 @@ apt-get install -y zlib1g-dev libelf-dev
 apt-get install -y protobuf-compiler
 apt-get install bpfcc-tools linux-headers-$(uname -r)
 
+# remove the '-12' suffixes
+for tool in "clang" "llc" "llvm-strip" 
+do 
+    path=$(which $tool-12) 
+    sudo ln -s $path ${path%-*} 
+done 
+
 # api stuff
 apt-get install -y python3-pymongo
 apt-get install -y python3-fastapi
@@ -32,13 +39,6 @@ sudo systemctl start mongod
 
 # TODO - find out why this doesn't work -MC
 sudo snap install --devmode bpftrace
-
-# remove the '-12' suffixes
-for tool in "clang" "llc" "llvm-strip" 
-do 
-    path=$(which $tool-12) 
-    sudo ln -s $path ${path%-*} 
-done 
 
 # uname -r returns kernel version
 # need linux-tools for kernel specific
