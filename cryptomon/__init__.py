@@ -99,7 +99,7 @@ class CryptoMon(object):
         net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
         tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
         tls_offset = net_packet_len + tcp_hdr_len
-        srcdst = skb_event.magic  # we've put the two addresses in this value, src:dst order.
+        srcdst = skb_event.magic
         sess_id_len = skb_event.raw[tls_offset+43]
         supported_groups = []
         supported_sigalgs = []
@@ -199,7 +199,7 @@ class CryptoMon(object):
         full_packet_len = lst2int(skb_event.raw[16:18])
         tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
         ssh_offset = net_packet_len + tcp_hdr_len
-        srcdst = skb_event.magic  # we've put the two addresses in this value, src:dst order.
+        srcdst = skb_event.magic
         src = lst2int(skb_event.raw[26:30])
         dst = lst2int(skb_event.raw[30:34])
         data['eth'] = {}
