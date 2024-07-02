@@ -50,7 +50,11 @@ int crypto_monitor(struct __sk_buff *skb)
     pass_value = pass_value << 32;
     pass_value = pass_value + daddr;
 
-    if (dport != 0x1BB && sport != 0x1BB){ //filter for port 443, SSL
+    if (dport != 0x1BB && sport != 0x1BB && // port 443
+        dport != 3389 && sport != 3389 && // port 3389 (RDP)
+        dport != 8080 && sport != 8080 && // port 8080
+        dport != 8443 && sport != 8443)   // port 8443
+    {
         return -1; // return -1 to keep packet, return 0 to drop packet.
     }
 
