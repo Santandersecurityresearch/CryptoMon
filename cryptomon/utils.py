@@ -57,3 +57,36 @@ def decimal_to_human(input_value):
         return ip_string
     except ValueError:
         return "Invalid input"
+
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+
+
+def cert_guess(in_array):
+    match = 0
+    for i in range(len(in_array)):
+        if in_array[i] == 0x0b:
+            # look for a SEQUENCE 0x30, 0x82
+            # as certificates are looong, and then
+            # what should be the first 0x30 after that.
+            if in_array[i+10] == 0x30 and \
+               in_array[i+11] == 0x82 and \
+               in_array[i+14] == 0x30:
+                match = i
+                break  # break out and try the cert
+    output = {}
+    if match == 0:
+        return output  # no certificato
+    try:
+        cert_len = lst2int(in_array[match+7:match+10])
+        cert_begin = match + 10
+        if in_array[cert_begin] != 0x30:  # something is wrong
+            return output
+        cert_list = in_array[cert_begin:cert_begin+cert_len]
+        print(''.join('{:02x}'.format(x) for x in cert_list))
+        cert_data = x509.load_der_x509_certificate(bytes(cert_list))
+    except:
+        print("oops")
+        pass
+    output['cert_data'] = cert_data
+    return output

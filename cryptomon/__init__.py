@@ -15,7 +15,8 @@ __status__ = "Demonstration"
 
 from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
-from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version, decimal_to_human
+from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version
+from cryptomon.utils import decimal_to_human, cert_guess
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
@@ -195,6 +196,10 @@ class CryptoMon(object):
                     kex_group = tuple(skb_event.raw[ext_offset+6:ext_offset+8])
                     data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
                 ext_offset += ext_len + 4
+        cert = cert_guess(skb_event.raw)
+        if cert:
+            print(cert)
+            # data['certificate'] = cert
         return data
     
     def ssh_parse_crypto(self, skb_event):
