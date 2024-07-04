@@ -66,6 +66,7 @@ int crypto_monitor(struct __sk_buff *skb)
 
     // here's where we filter for the ports we are interested in 
     if (dport == 443   || sport == 443   || // port 443  for TLS
+        dport == 990   || sport == 990   || // port 990 for FTPS
         dport == 3389  || sport == 3389  || // port 3389 (RDP TLS)
         dport == 8080  || sport == 8080  || // port 8080 for TLS
         dport == 8443  || sport == 8443)    // port 8443 for TLS
