@@ -29,8 +29,8 @@ class TLSDataModel(BaseModel):
             "example": {
                 "id": "00010203-0405-0607-0809-0a0b0c0d0e0f",
                 "ptype": 'server',
-                "eth": {"src": {"ipv4": '172.64.155.119'},
-                        "dst": {"ipv4": '192.168.64.5'}},
+                "eth": {"src": {"ipv4": '172.64.155.119', "port": 443},
+                        "dst": {"ipv4": '192.168.64.5', "port": 33789}},
                 "tls": {
                     "tls_versions": 'TLSv1.2',
                     "ciphersuite": 'TLS_AES_128_GCM_SHA256',
@@ -49,8 +49,8 @@ class UpdateTLSDataModel(BaseModel):
         schema_extra = {
             "example":   {
                 "ptype": 'server',
-                "eth": {"src": {"ipv4": '172.64.155.119'}, 
-                        "dst": {"ipv4": '192.168.64.5'}},
+                "eth": {"src": {"ipv4": '172.64.155.119', "port": 443}, 
+                        "dst": {"ipv4": '192.168.64.5', "port": 33789}},
                 "tls": {
                     "tls_versions": 'TLSv1.2',
                     "ciphersuite": 'TLS_AES_128_GCM_SHA256',
