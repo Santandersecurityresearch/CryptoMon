@@ -199,6 +199,9 @@ class CryptoMon(object):
                     data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
                 ext_offset += ext_len + 4
         # next, attempt to get a cert if present...
+        if "ptype" not in data.keys():
+            # this means that it wasn't a hello packet, so drop
+            return {}
         cert = {}
         try:
             cert = cert_guess(skb_event.raw)
