@@ -203,8 +203,7 @@ class CryptoMon(object):
         except:
             pass
         if cert:
-            print(cert)
-            data['certificate'] = cert
+            data['tls']['certificate'] = cert
         return data
     
     def ssh_parse_crypto(self, skb_event):
