@@ -196,10 +196,15 @@ class CryptoMon(object):
                     kex_group = tuple(skb_event.raw[ext_offset+6:ext_offset+8])
                     data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
                 ext_offset += ext_len + 4
-        cert = cert_guess(skb_event.raw)
+        # next, attempt to get a cert if present...
+        cert = {}
+        try:
+            cert = cert_guess(skb_event.raw)
+        except:
+            pass
         if cert:
             print(cert)
-            # data['certificate'] = cert
+            data['certificate'] = cert
         return data
     
     def ssh_parse_crypto(self, skb_event):

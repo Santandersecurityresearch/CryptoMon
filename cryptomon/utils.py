@@ -1,5 +1,6 @@
 import ipaddress
 import sys
+import jc
 
 from cryptomon.data import TLS_HASH_ALGS, TLS_SIGALG_DICT, TLS_SIGN_ALGS
 
@@ -83,10 +84,11 @@ def cert_guess(in_array):
         if in_array[cert_begin] != 0x30:  # something is wrong
             return output
         cert_list = in_array[cert_begin:cert_begin+cert_len]
-        print(''.join('{:02x}'.format(x) for x in cert_list))
-        cert_data = x509.load_der_x509_certificate(bytes(cert_list))
+        # print(''.join('{:02x}'.format(x) for x in cert_list))
+        # cert_data = x509.load_der_x509_certificate(bytes(cert_list))
+        output = jc.parse('x509_cert', bytes(cert_list))
     except:
         print("oops")
         pass
-    output['cert_data'] = cert_data
+    print("SUCCESS!")
     return output
