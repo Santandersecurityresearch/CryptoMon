@@ -49,7 +49,7 @@ class UpdateTLSDataModel(BaseModel):
         schema_extra = {
             "example":   {
                 "ptype": 'server',
-                "eth": {"src": {"ipv4": '172.64.155.119', "port": 443}, 
+                "eth": {"src": {"ipv4": '172.64.155.119', "port": 443},
                         "dst": {"ipv4": '192.168.64.5', "port": 33789}},
                 "tls": {
                     "tls_versions": 'TLSv1.2',
