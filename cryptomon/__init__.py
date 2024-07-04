@@ -228,6 +228,8 @@ class CryptoMon(object):
         data['eth']['dst'] = {}
         data['eth']['src']['ipv4'] = decimal_to_human(str(src))
         data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
+        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
         data['ssh'] = {}
         # ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
         ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,

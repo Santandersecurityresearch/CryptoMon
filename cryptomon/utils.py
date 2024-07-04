@@ -85,7 +85,6 @@ def cert_guess(in_array):
         # cert_data = x509.load_der_x509_certificate(bytes(cert_list))
         output = jc.parse('x509_cert', bytes(cert_list))
     except:
-        print("oops")
+        print("[!] Certificate parsing failed... TCP Fragmentation?")
         pass
-    print("SUCCESS!")
     return output
