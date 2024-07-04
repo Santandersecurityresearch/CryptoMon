@@ -123,6 +123,8 @@ class CryptoMon(object):
         data['eth']['dst'] = {}
         data['eth']['src']['ipv4'] = decimal_to_human(str(src))
         data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
+        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
         data['tls'] = {}
         data['tls']['tls_versions'] = get_tls_version(skb_event.raw[tls_offset + 9: tls_offset + 11])
         tls_len = lst2int(skb_event.raw[tls_offset + 3: tls_offset + 5])

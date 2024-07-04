@@ -9,6 +9,7 @@ JSONStructure = Union[List[Any], Dict[AnyStr, Any]]
 
 class IPModel(BaseModel):
     ipv4: str = "0.0.0.0"
+    port: int = 80
 
 
 class EthModel(BaseModel):
