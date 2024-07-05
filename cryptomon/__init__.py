@@ -7,7 +7,7 @@ Cryptomon - a library that uses eBPF to monitor network traffic from
 __author__ = "Mark Carney"
 __copyright__ = "Copyright 2024, Mark Carney"
 __credits__ = ["Mark Carney"]
-__license__ = "Apache 2.0"
+__license__ = "GLP 3.0"
 __version__ = "1.0.0"
 __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
@@ -72,6 +72,8 @@ class CryptoMon(object):
                 data = self.ssh_parse_crypto(skb_event)
             case _:
                 data = skb_event
+        if not data:
+            return
         self.handle_data(data)
         
     def handle_data(self, data_object):
