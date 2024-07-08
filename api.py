@@ -11,7 +11,7 @@ Author: Mark Carney (mark[.]carney[@]gruposantander[.]com)
 __author__ = "Mark Carney"
 __copyright__ = "Copyright 2024, Mark Carney"
 __credits__ = ["Mark Carney"]
-__license__ = "Apache 2.0"
+__license__ = "GLP 3.0"
 __version__ = "1.0.0"
 __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
@@ -48,7 +48,6 @@ async def shutdown_db_client():
 
 app.include_router(data_routers, tags=["cryptomon"], prefix="/data")
 
-# 
 # load some static pages, if required. 
 # app.mount("/", StaticFiles(directory="frontend/dist/"), name="ui")
 

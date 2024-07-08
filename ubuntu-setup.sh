@@ -45,3 +45,5 @@ sudo systemctl enable mongod
 sudo systemctl start mongod
 
 apt-get install -y python3-tinydb
+apt-get install -y jc  # JC is JSON Converter, very useful.
+python3 -m pip install jc  # because JC is a good converter

@@ -66,6 +66,7 @@ int crypto_monitor(struct __sk_buff *skb)
 
     // here's where we filter for the ports we are interested in 
     if (dport == 443   || sport == 443   || // port 443  for TLS
+        dport == 990   || sport == 990   || // port 990 for FTPS
         dport == 3389  || sport == 3389  || // port 3389 (RDP TLS)
         dport == 8080  || sport == 8080  || // port 8080 for TLS
         dport == 8443  || sport == 8443)    // port 8443 for TLS
@@ -75,8 +76,9 @@ int crypto_monitor(struct __sk_buff *skb)
         unsigned short hello_check = load_byte(skb, payload_offset);
         unsigned short hello_tls_1 = load_byte(skb, payload_offset+1);
         unsigned short hello_tls_2 = load_byte(skb, payload_offset+2);
-        if (hello_check == 0x16 && hello_tls_1 == 3 && 
-            (hello_tls_2 == 1 || hello_tls_2 == 2 || hello_tls_2 == 3 || hello_tls_2 == 4 )){
+        if (hello_check == 0x16 && hello_tls_1 == 3 &&
+            (hello_tls_2 == 1 || hello_tls_2 == 2 ||
+             hello_tls_2 == 3 || hello_tls_2 == 4 )){
             // TLS 'helo' data is heralded by a value of '22'.
             pass_value = 1;
             skb_events.perf_submit_skb(skb, skb->len,

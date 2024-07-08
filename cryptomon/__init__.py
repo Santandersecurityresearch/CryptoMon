@@ -7,7 +7,7 @@ Cryptomon - a library that uses eBPF to monitor network traffic from
 __author__ = "Mark Carney"
 __copyright__ = "Copyright 2024, Mark Carney"
 __credits__ = ["Mark Carney"]
-__license__ = "Apache 2.0"
+__license__ = "GLP 3.0"
 __version__ = "1.0.0"
 __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
@@ -15,7 +15,8 @@ __status__ = "Demonstration"
 
 from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
-from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version, decimal_to_human
+from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version
+from cryptomon.utils import decimal_to_human, cert_guess
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
@@ -71,6 +72,8 @@ class CryptoMon(object):
                 data = self.ssh_parse_crypto(skb_event)
             case _:
                 data = skb_event
+        if not data:
+            return
         self.handle_data(data)
         
     def handle_data(self, data_object):
@@ -122,6 +125,8 @@ class CryptoMon(object):
         data['eth']['dst'] = {}
         data['eth']['src']['ipv4'] = decimal_to_human(str(src))
         data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
+        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
         data['tls'] = {}
         data['tls']['tls_versions'] = get_tls_version(skb_event.raw[tls_offset + 9: tls_offset + 11])
         tls_len = lst2int(skb_event.raw[tls_offset + 3: tls_offset + 5])
@@ -195,6 +200,17 @@ class CryptoMon(object):
                     kex_group = tuple(skb_event.raw[ext_offset+6:ext_offset+8])
                     data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
                 ext_offset += ext_len + 4
+        # next, attempt to get a cert if present...
+        if "ptype" not in data.keys():
+            # this means that it wasn't a hello packet, so drop
+            return {}
+        cert = {}
+        try:
+            cert = cert_guess(skb_event.raw)
+        except:
+            pass
+        if cert:
+            data['tls']['certificate'] = cert
         return data
     
     def ssh_parse_crypto(self, skb_event):
@@ -217,6 +233,8 @@ class CryptoMon(object):
         data['eth']['dst'] = {}
         data['eth']['src']['ipv4'] = decimal_to_human(str(src))
         data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
+        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
         data['ssh'] = {}
         # ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
         ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,
