@@ -5,4 +5,5 @@ motor==3.5.1
 pydantic==2.8.2
 tinydb==4.8.0
 uvicorn==0.30.0
+psutil==6.0.0
 

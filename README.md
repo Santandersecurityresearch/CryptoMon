@@ -1,5 +1,5 @@
 [![CodeQL](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql)
-[![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 # CryptoMon
 
@@ -55,7 +55,7 @@ sudo python3 ./cryptomon.py -i <iface> &
 python3 ./api.py
 ```
 
-Where `<iface>` should be replaecd with the network interface to be monitored (`enp0s1` by default.)
+Where `<iface>` should be replaced with the network interface to be monitored (`enp0s1` by default.)
 
 If you have installed `cryptomon` as a service, then you do not need to run the first line. To check the monitor is working you can run `db.cryptomon.count({})` from `mongosh` to see if the record count is increasing. 
 

@@ -20,18 +20,30 @@ __status__ = "Demonstration"
 
 import asyncio
 import argparse
-
+import psutil
 from fapi.config import settings
 
 from cryptomon import CryptoMon
+
+def list_interfaces():
+    interfaces = psutil.net_if_addrs().keys()
+    return list(interfaces)
 
 
 def parse_argz():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--interface", 
-                        default="enp0s1",
                         help="Interface to hook with eBPF module.")
     args = parser.parse_args()
+
+    if not args.interface:
+        interfaces = list_interfaces()
+        print("Available network interfaces:")
+        for i, iface in enumerate(interfaces, 1):
+            print(f"{i}: {iface}")
+        choice = int(input("Select an interface by number: ")) - 1
+        args.interface = interfaces[choice]
+
     return args
 
 
