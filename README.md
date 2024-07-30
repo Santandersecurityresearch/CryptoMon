@@ -1,3 +1,4 @@
+[![CodeQL](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql)
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
 # CryptoMon
