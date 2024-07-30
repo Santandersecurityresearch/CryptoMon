@@ -1,3 +1,6 @@
+[![CodeQL](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql)
+[![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
+
 # CryptoMon
 
 Network Cryptography Monitor - using eBPF, written in python.
@@ -150,3 +153,11 @@ A server hello capture example:
 "ts": 1719848309.26233
 }
 ```
+## Software Bill of Materials (SBOM)
+
+We are firm supporters of the SBOM movement, as it's a key building block in software security and software supply chain risk management. A SBOM is a nested inventory, a list of ingredients that make up software components and as such, here's our recipe:
+
+![](img/sbom1.png)
+![](img/sbom2.png)
+![](img/sbom3.png)
+![](img/sbom4.png)
