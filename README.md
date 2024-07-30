@@ -1,3 +1,5 @@
+[![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
+
 # CryptoMon
 
 Network Cryptography Monitor - using eBPF, written in python.
