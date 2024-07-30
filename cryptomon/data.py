@@ -1,5 +1,3 @@
-# 
-
 import csv
 import os
 
@@ -7,6 +5,17 @@ TLS_DICT = {}
 
 
 def get_tls_from_csv(csv_file):
+    """
+    Reads a CSV file containing TLS data and returns a dictionary of cipher suites.
+
+    Args:
+        csv_file (str): The path to the CSV file.
+
+    Returns:
+        dict: A dictionary where the keys are tuples of integers representing cipher suites,
+              and the values are the corresponding descriptions.
+
+    """
     with open(csv_file, 'r') as file:
         csv_reader = csv.DictReader(file)
         data = [row for row in csv_reader]

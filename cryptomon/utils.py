@@ -29,7 +29,7 @@ def parse_sigalgs(sigalg_list):
 def help():
     print("execute: {0} <net_interface>".format(sys.argv[0]))
     print("e.g.: {0} eno1\n".format(sys.argv[0]))
-    exit(1)
+    sys.exit(1)
 
 
 def get_tls_version(in_lst):
@@ -54,7 +54,10 @@ def lst2str(in_lst):
 def decimal_to_human(input_value):
     try:
         decimal_ip = int(input_value)
-        ip_string = str(ipaddress.IPv4Address(decimal_ip))
+        if decimal_ip <= 0xFFFFFFFF:
+            ip_string = str(ipaddress.IPv4Address(decimal_ip))
+        else:
+            ip_string = str(ipaddress.IPv6Address(decimal_ip))
         return ip_string
     except ValueError:
         return "Invalid input"
