@@ -12,7 +12,27 @@ This is an demonstration service that allows the interception and analysis of ov
 
 Cryptomon looks for port 443 traffic, and if found, looks for the 'hello' packets from the client and server. It parses the packet data and then stores it in a MongoDB database that can later be analysed.
 
-The advantage of using network monitoring alongside the [CodeQL Source Code analysis](https://github.blog/2023-12-05-addressing-post-quantum-cryptography-with-codeql/) we have worked on previously, is that static analysis of code tells you what could be running, whilst over-the-wire monitoring tells you what is actually being negotiated. 
+The advantage of using network monitoring alongside the [CodeQL Source Code analysis](https://github.blog/2023-12-05-addressing-post-quantum-cryptography-with-codeql/) we have worked on previously, is that static analysis of code tells you what could be running, whilst over-the-wire monitoring tells you what is actually being negotiated.
+
+## What is supported
+
+Currently we support the following protocols and captures:
+
+* TLS Handshake data for all TLS versions, inc. proposed ciphersuites and accepted ciphersuites, across several ports:
+  * 443 (https)
+  * 990 (sftp)
+  * 3389 (rdp)
+  * 8080 (proxy)
+  * 8443 (proxy)
+* TLS Certificates - where they are complete and not affected by TCP fragmentation.
+* SSH Handshakes - including kex, server algos, etc.
+
+We support a local FastAPI service, as well as logging to file via `TinyDB` or logging to a NoSQL document DB using MongoDB.
+
+**TODO features** include:
+
+* SSH Key logging option
+* IPv6 support
 
 ## Setup
 
