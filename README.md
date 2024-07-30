@@ -25,7 +25,9 @@ Currently we support the following protocols and captures:
   * 8080 (proxy)
   * 8443 (proxy)
 * TLS Certificates - where they are complete and not affected by TCP fragmentation.
-* SSH Handshakes - including kex, server algos, etc. 
+* SSH Handshakes - including kex, server algos, etc.
+
+We support a local FastAPI service, as well as logging to file via `TinyDB` or logging to a NoSQL document DB using MongoDB.
 
 **TODO features** include:
 
