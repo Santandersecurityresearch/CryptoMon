@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 
 .DS_Store
+A007653A_00001_20230626092541.pcap
+cryptomon.json
+cryptomon.service
 
 # C extensions
 *.so

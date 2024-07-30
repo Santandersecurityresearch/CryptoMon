@@ -1,6 +1,7 @@
 [![CodeQL](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
+
 # CryptoMon
 
 Network Cryptography Monitor - using eBPF, written in python.
@@ -65,7 +66,9 @@ To access the FastAPI documentation go to `http://0.0.0.0:8000/docs` to find the
 
 ## Example Data
 
-A client capture example:
+### TLS Capture
+
+A TLS client capture example:
 
 ```json
 {
@@ -132,7 +135,7 @@ A client capture example:
 }
 ```
 
-A server hello capture example:
+A TLS server hello capture example:
 
 ```json
 {
@@ -153,6 +156,7 @@ A server hello capture example:
 "ts": 1719848309.26233
 }
 ```
+
 ## Software Bill of Materials (SBOM)
 
 We are firm supporters of the SBOM movement, as it's a key building block in software security and software supply chain risk management. A SBOM is a nested inventory, a list of ingredients that make up software components and as such, here's our recipe:
