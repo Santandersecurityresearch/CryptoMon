@@ -8,7 +8,7 @@ __author__ = "Mark Carney"
 __copyright__ = "Copyright 2024, Mark Carney"
 __credits__ = ["Mark Carney"]
 __license__ = "GLP 3.0"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
@@ -20,7 +20,7 @@ from cryptomon.utils import decimal_to_human, cert_guess
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
-
+import logging
 import datetime as dt
 
 from bcc import BPF
@@ -31,6 +31,7 @@ ETH_HDR_LEN = 14
 IP4_HDR_LEN = 20
 TCP_HDR_LEN = 20
 
+logging.basicConfig(level=logging.INFO)
 
 class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
@@ -70,11 +71,20 @@ class CryptoMon(object):
                 data = self.tls_parse_crypto(skb_event)
             case 2:
                 data = self.ssh_parse_crypto(skb_event)
+            # case 3: 
+            #     data = self.ipsec_parse_crypto(skb_event)
+            case 4:
+                data = self.tls_parse_crypto_ipv6(skb_event)
+            case 5:
+                data = self.ssh_parse_crypto_ipv6(skb_event)
             case _:
+                logging.warning(f"Unknown packet type: {skb_event.magic}")
                 data = skb_event
         if not data:
+            logging.warning("No data returned from packet processing")
             return
         self.handle_data(data)
+            
         
     def handle_data(self, data_object):
         # add tag
@@ -104,6 +114,7 @@ class CryptoMon(object):
             await asyncio.sleep(1)
             self.b.perf_buffer_poll()
         
+    # this handles ipv4 TLS traffic    
     def tls_parse_crypto(self, skb_event):
         data = {}
         ETH_HDR_LEN = 14
@@ -213,6 +224,8 @@ class CryptoMon(object):
             data['tls']['certificate'] = cert
         return data
     
+
+    # this handles ipv4 SSH traffic
     def ssh_parse_crypto(self, skb_event):
         data = {}
         ETH_HDR_LEN = 14
@@ -249,4 +262,159 @@ class CryptoMon(object):
             str_raw = "".join([chr(x) for x in str_block])
             data['ssh'][sec] = str_raw.split(',')  # split on commas
             ssh_offset += sec_len
+        return data
+    
+    # This handles IPv6 SSH traffic
+    def ssh_parse_crypto_ipv6(self, skb_event):
+        data = {}
+        # Destination MAC Address: 6 bytes
+        # Source MAC Address: 6 bytes
+        # EtherType/Length: 2 bytes 0x0800 for IPv4, 0x86DD for IPv6
+        ETH_HDR_LEN = 14
+        IP6_HDR_LEN = 40  # IPv6 header length double that of IPv4
+
+        net_packet_len = ETH_HDR_LEN + IP6_HDR_LEN
+        src_prt = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['ptype'] = "server" if src_prt == 22 else "client"
+
+        src = skb_event.raw[22:38]  # Extract IPv6 source address
+        dst = skb_event.raw[38:54]  # Extract IPv6 destination address
+
+        data['eth'] = {}
+        data['eth']['src'] = {}
+        data['eth']['dst'] = {}
+        data['eth']['src']['ipv6'] = ":".join(format(x, "02x") for x in src)
+        data['eth']['dst']['ipv6'] = ":".join(format(x, "02x") for x in dst)
+        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
+
+        full_packet_len = lst2int(skb_event.raw[16:18])
+        tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4)  # get tcp header len
+        ssh_offset = net_packet_len + tcp_hdr_len
+        ssh_offset += 6 + 16  # 6 bytes for packet length, padding length, message code, and 16 bytes for SSH cookie
+
+        for sec in SSH_SECTIONS:
+            if not (ssh_offset < full_packet_len):
+                break
+            sec_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
+            ssh_offset += 4
+            str_block = skb_event.raw[ssh_offset:ssh_offset+sec_len]
+            str_raw = "".join([chr(x) for x in str_block])
+            data['ssh'][sec] = str_raw.split(',')  # split on commas
+            ssh_offset += sec_len
+        return data
+
+    # This handles IPv6 TLS traffic
+    def tls_parse_crypto_ipv6(self, skb_event):
+        data = {}
+        ETH_HDR_LEN = 14
+        IP6_HDR_LEN = 40  # IPv6 header length is 40 bytes
+        
+
+        net_packet_len = ETH_HDR_LEN + IP6_HDR_LEN
+        tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4)  # get tcp header len
+        tls_offset = net_packet_len + tcp_hdr_len
+
+        src = skb_event.raw[22:38]  # Extract IPv6 source address
+        dst = skb_event.raw[38:54]  # Extract IPv6 destination address
+
+        data['eth'] = {}
+        data['eth']['src'] = {}
+        data['eth']['dst'] = {}
+        data['eth']['src']['ipv6'] = ":".join(format(x, "02x") for x in src)
+        data['eth']['dst']['ipv6'] = ":".join(format(x, "02x") for x in dst)
+        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
+        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
+        
+        data['tls'] = {}
+        data['tls']['tls_versions'] = get_tls_version(skb_event.raw[tls_offset + 9: tls_offset + 11])
+        tls_len = lst2int(skb_event.raw[tls_offset + 3: tls_offset + 5])
+        sess_id_len = skb_event.raw[tls_offset+43]
+        offset = tls_offset + 44 + sess_id_len
+        supported_groups = []
+        supported_sigalgs = []
+        supported_tls_versions = []
+
+        if skb_event.raw[tls_offset + 5] == 2:  # Server Hello
+            data['ptype'] = 'server'
+            negotiated_suite = tuple(skb_event.raw[offset:offset+2])
+            data['tls']['ciphersuite'] = TLS_DICT[negotiated_suite]
+            ext_offset = offset + 5
+            ext_section_len = ext_offset + lst2int(skb_event.raw[offset+3:offset+5])
+            while ext_offset < ext_section_len:
+                ext_type = lst2int(skb_event.raw[ext_offset:ext_offset+2])
+                ext_len = lst2int(skb_event.raw[ext_offset+2:ext_offset+4])
+                if ext_type == 51:  # key section
+                    kex_group = tuple(skb_event.raw[ext_offset+4:ext_offset+6])
+                    data['tls']['kex_group'] = TLS_GROUPS_DICT[kex_group]
+                if ext_type == 43:  # supported TLS versions
+                    vers_offset = ext_offset + 2
+                    vers_ext_len = lst2int(skb_event.raw[vers_offset:vers_offset+2])
+                    vers_offset += 2
+                    for i in range(0, vers_ext_len, 2):
+                        supported_tls_versions.append(skb_event.raw[vers_offset+i:vers_offset+i+2])
+                    data['tls']['tls_versions'] = [get_tls_version(x) for x in supported_tls_versions]
+                ext_offset += ext_len + 4
+
+        if skb_event.raw[tls_offset + 5] == 1:  # Client Hello, is it me you're looking for?
+            data['ptype'] = 'client'
+            len_ciphersuite_list = lst2int(skb_event.raw[offset:offset+2])
+            csuite_offset = offset + 2
+            proposed_suites = skb_event.raw[csuite_offset:csuite_offset + len_ciphersuite_list]
+            ciphersuites = list(zip(proposed_suites[::2], proposed_suites[1::2]))
+            data['tls']['ciphersuites'] = [TLS_DICT.get(x, 'Reserved') for x in ciphersuites]
+            ext_offset = csuite_offset + len_ciphersuite_list
+            ext_offset = ext_offset + 1 + lst2int(skb_event.raw[ext_offset:ext_offset+1])  # compression method len
+            ext_offset += 2  # extension length bytes
+            while ext_offset < tls_len - 1:
+                ext_type = lst2int(skb_event.raw[ext_offset:ext_offset+2])
+                ext_len = lst2int(skb_event.raw[ext_offset+2:ext_offset+4])
+                if ext_type == 22:  # EtM is enabled
+                    data['tls']['EtM'] = True
+                else:
+                    data['tls']['EtM'] = False
+                if ext_type == 43:  # supported TLS versions
+                    vers_offset = ext_offset + 4
+                    vers_ext_len = skb_event.raw[vers_offset:vers_offset+1][0]
+                    vers_offset += 1
+                    for i in range(0, vers_ext_len, 2):
+                        supported_tls_versions.append(skb_event.raw[vers_offset+i:vers_offset+i+2])
+                    data['tls']['tls_versions'] = [get_tls_version(x) for x in supported_tls_versions]
+                if ext_type == 0:  # check if '0000' indicating server_name TLS parameter
+                    name_offset = ext_offset + 7
+                    len_hostname = lst2int(skb_event.raw[name_offset:name_offset+2])
+                    name_offset += 2
+                    data['tls']['hostname'] = lst2str(skb_event.raw[name_offset:name_offset+len_hostname])
+                if ext_type == 10:  # supported ECC groups
+                    group_offset = ext_offset + 4
+                    group_list_len = lst2int(skb_event.raw[group_offset:group_offset + 2])
+                    group_offset += 2
+                    for i in range(0, group_list_len, 2):
+                        supported_groups.append(tuple(skb_event.raw[group_offset+i:group_offset+i+2]))
+                    data['tls']['groups'] = [TLS_GROUPS_DICT.get(x, 'Reserved') for x in supported_groups]
+                if ext_type == 13:  # supported Signature Algorithms
+                    sigalg_offset = ext_offset + 4
+                    sigalt_list_len = lst2int(skb_event.raw[sigalg_offset:sigalg_offset + 2])
+                    sigalg_offset += 2
+                    for i in range(0, sigalt_list_len, 2):
+                        supported_sigalgs.append(tuple(skb_event.raw[sigalg_offset+i:sigalg_offset+i+2]))
+                    data['tls']['sigalgs'] = parse_sigalgs(supported_sigalgs)
+                if ext_type == 51:  # key share extension
+                    kex_group = tuple(skb_event.raw[ext_offset+6:ext_offset+8])
+                    data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
+                ext_offset += ext_len + 4
+        
+        if "ptype" not in data.keys():
+            # Not a hello packet, drop it like it's hot
+            return {}
+        
+        cert = {}
+        try:
+            cert = cert_guess(skb_event.raw)
+        except:
+            pass
+        
+        if cert:
+            data['tls']['certificate'] = cert
+        
         return data
