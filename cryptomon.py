@@ -16,7 +16,7 @@ __license__ = "GLP 3.0"
 __version__ = "1.0.0"
 __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
-__status__ = "Demonstration"
+__status__ = "MVP"
 
 import asyncio
 import argparse
@@ -37,7 +37,7 @@ def parse_argz():
     parser.add_argument("-i", "--interface", 
                         help="Interface to hook with eBPF module.")
     parser.add_argument("--pcap", 
-                        help="pcap file")
+                        help="PCAP file to be replayed on loopback.")
     args = parser.parse_args()
 
     if not args.interface:
@@ -82,8 +82,6 @@ if __name__ == "__main__":
                    data_tag="")
     loop = asyncio.get_event_loop()
     loop.create_task(cm.run_async())
-    # if args.pcap:
-    #     loop.create_task(rerun_pcap(args.pcap))
     loop.run_forever()
     # alternatively, run...
     # cm.run()
