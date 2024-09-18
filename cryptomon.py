@@ -54,14 +54,14 @@ def parse_argz():
     return args
 
 
-async def rerun_pcap(pcap_file="test.pcap"):
+def rerun_pcap(pcap_file="test.pcap"):
     packets = rdpcap(pcap_file)
     iface = "lo"
     print(f"[i] Replaying packets from {str(pcap_file)}...")
     ctr = 0
     for packet in packets:
         if ctr % 10 == 0:
-            print(f"{ctr} of {len(packets)}", end='\r')
+            print(f"[{int(100*ctr/len(packets))}%] {ctr} of {len(packets)}", end='\r')
         try:
             sendp(packet, iface=iface, verbose=False)
         except Exception as e:
@@ -72,6 +72,9 @@ async def rerun_pcap(pcap_file="test.pcap"):
 if __name__ == "__main__":
     task_list = []
     args = parse_argz()
+    if args.pcap:
+        rerun_pcap(args.pcap)
+        sys.exit(0)
     cm = CryptoMon(iface=args.interface,
                    mongodb=True,
                    settings=settings,
@@ -79,8 +82,8 @@ if __name__ == "__main__":
                    data_tag="")
     loop = asyncio.get_event_loop()
     loop.create_task(cm.run_async())
-    if args.pcap:
-        loop.create_task(rerun_pcap(args.pcap))
+    # if args.pcap:
+    #     loop.create_task(rerun_pcap(args.pcap))
     loop.run_forever()
     # alternatively, run...
     # cm.run()
