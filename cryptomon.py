@@ -11,7 +11,7 @@ Author: Mark Carney (mark[.]carney[@]gruposantander[.]com)
 
 __author__ = "Mark Carney"
 __copyright__ = "Copyright 2024, Mark Carney"
-__credits__ = ["Mark Carney"]
+__credits__ = ["Mark Carney", "Daniel Cuthbert"]
 __license__ = "GLP 3.0"
 __version__ = "1.0.0"
 __maintainer__ = "Mark Carney"
