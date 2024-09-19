@@ -80,6 +80,16 @@ Where `<iface>` should be replaced with the network interface to be monitored (`
 
 If you have installed `cryptomon` as a service, then you do not need to run the first line. To check the monitor is working you can run `db.cryptomon.count({})` from `mongosh` to see if the record count is increasing. 
 
+## PCAP Files
+
+To parse a pcap file `test.pcap`, simply run:
+
+```bash
+./parse-pcap.sh test.pcap
+```
+
+So long as your data environment variables are all set, then this will parse the PCAP data and replay it over the loopback `lo` interface, allowing cryptomon to parse it.
+
 ## FastAPI 
 
 To access the FastAPI documentation go to `http://0.0.0.0:8000/docs` to find the documentation for the backend API.

@@ -35,7 +35,7 @@ TCP_HDR_LEN = 20
 class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
-                 bpf_code=bpf_ipv4_txt,
+                 bpf_code=bpf_ipv4_txt, pcap_file="",
                  data_tag=""):
         if not settings:
             raise Exception("No settings provided... Aborting.")
@@ -84,7 +84,7 @@ class CryptoMon(object):
         data_object['ts'] = dt.datetime.now().timestamp()
         if self.fapi_on:
             self.fapi_app.mongodb["cryptomon"].insert_one(data_object)
-        elif self.mongodb:
+        elif self.mongodb is not None:
             self.mongodb["cryptomon"].insert_one(data_object)
         else:
             self.tinydb.insert(data_object)
