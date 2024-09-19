@@ -54,7 +54,7 @@ def parse_argz():
     return args
 
 
-def rerun_pcap(pcap_file="test.pcap"):
+def rerun_pcap(pcap_file):
     packets = rdpcap(pcap_file)
     iface = "lo"
     print(f"[i] Replaying packets from {str(pcap_file)}...")
