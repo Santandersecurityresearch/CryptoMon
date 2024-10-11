@@ -16,9 +16,16 @@ def get_tls_from_csv(csv_file):
               and the values are the corresponding descriptions.
 
     """
-    with open(csv_file, 'r') as file:
-        csv_reader = csv.DictReader(file)
-        data = [row for row in csv_reader]
+    try:
+        with open(csv_file, 'r', encoding='utf-8') as file:
+            csv_reader = csv.DictReader(file)
+            data = [row for row in csv_reader]
+    except FileNotFoundError:
+        print(f"Error: The file {csv_file} was not found.")
+        return {}
+    except Exception as e:
+        print(f"Error: {e}")
+        return {}
     csuite_dict = {}
     for i in range(len(data)):
         value = data[i]['Value'].split(',')
