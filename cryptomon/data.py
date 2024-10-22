@@ -16,7 +16,7 @@ def get_tls_from_csv(csv_file):
               and the values are the corresponding descriptions.
 
     """
-    with open(csv_file, 'r') as file:
+    with open(csv_file, 'r', encoding='utf-8') as file:
         csv_reader = csv.DictReader(file)
         data = [row for row in csv_reader]
     csuite_dict = {}
