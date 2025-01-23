@@ -136,7 +136,7 @@ class CryptoMon(object):
             data['ptype'] = 'server'
             negotiated_suite = tuple(skb_event.raw[offset:offset+2])
             data['tls']['ciphersuite'] = TLS_DICT[negotiated_suite]
-            ext_offset = offset + 5  # SKIP negotiated suite (2 bytes), TLS section length (3 bytes)
+            ext_offset = offset + 5  # SKIP negotiated suite (2 bytes), TLS section length (2 bytes) and compression method (1 byte)
             ext_section_len = ext_offset + lst2int(skb_event.raw[offset+3:offset+5])
             while ext_offset < ext_section_len:
                 ext_type = lst2int(skb_event.raw[ext_offset:ext_offset+2])
@@ -152,7 +152,7 @@ class CryptoMon(object):
                     for i in range(0, vers_ext_len, 2):
                         supported_tls_versions.append(skb_event.raw[vers_offset+i:vers_offset+i+2])
                     data['tls']['tls_versions'] = [get_tls_version(x) for x in supported_tls_versions]
-                ext_offset = ext_len + 4
+                ext_offset += ext_len + 4
         if skb_event.raw[tls_offset + 5] == 1:  # client helo
             data['ptype'] = 'client'
             len_ciphersuite_list = lst2int(skb_event.raw[offset:offset+2])
