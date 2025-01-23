@@ -1,6 +1,6 @@
 import uuid
 from typing import List, Optional, Union, Any, Dict, AnyStr, List
-from pydantic import BaseModel, Field
+from pydantic_settings import BaseModel, Field
 
 
 # JSON is really just arrays and objects that look like this...

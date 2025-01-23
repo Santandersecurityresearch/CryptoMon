@@ -77,9 +77,9 @@ TLS_GROUPS_DICT = {(0x00, 0x01): "sect163k1",
                    (0x01, 0x02): "ffdhe4096",
                    (0x01, 0x03): "ffdhe6144",
                    (0x01, 0x04): "ffdhe8192",
-                   (0x01, 0xEB): "SecP256r1MLKEM768", # https://datatracker.ietf.org/doc/draft-kwiatkowski-tls-ecdhe-mlkem/03/
-                   (0x01, 0xEC): "X25519MLKEM768",
-                   (0x01, 0xED): "SecP384r1MLKEM1024",
+                   (0x11, 0xEB): "SecP256r1MLKEM768", # https://datatracker.ietf.org/doc/draft-kwiatkowski-tls-ecdhe-mlkem/03/
+                   (0x11, 0xEC): "X25519MLKEM768",
+                   (0x11, 0xED): "SecP384r1MLKEM1024",
                    (0x63, 0x99): "X25519Kyber768Draft00",
                    (0x63, 0x9A): "SecP256r1Kyber768Draft00",
                    (0xFF, 0x01): "arbitrary_explicit_prime_curves",
