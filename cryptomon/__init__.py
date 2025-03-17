@@ -52,7 +52,7 @@ class CryptoMon(object):
         self.if_name = self.ipr.link_lookup(ifname=iface)[0]
         self.ipr.link('set', index=self.if_name, state='up')
         self.ipr.link('set', index=self.if_name, flags=['IFF_PROMISC'])  # set PROMISC mode...
-        self.ipr.tc("add", "clsact", self.if_name) # add qdisc
+        # self.ipr.tc("add", "clsact", self.if_name)  # add qdisc; udpate - not needed! causes errrors. TOFIX.
         self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
                     name=self.fn.name, parent="ffff:fff3",
                     classid=1, direct_action=True)
