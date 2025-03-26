@@ -15,6 +15,7 @@ apt-get install -y protobuf-compiler
 apt-get install -y python3-scapy
 apt-get install -y python3-motor
 apt-get install -y python3-psutil
+apt-get install -y python3-pyroute2
 apt-get install bpfcc-tools linux-headers-$(uname -r)
 
 # remove the '-12' suffixes
