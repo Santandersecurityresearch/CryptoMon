@@ -17,7 +17,6 @@ from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
 from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version
 from cryptomon.utils import decimal_to_human, cert_guess
-from cryptomon.libpcap import *
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
