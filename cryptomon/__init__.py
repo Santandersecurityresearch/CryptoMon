@@ -17,9 +17,11 @@ from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
 from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version
 from cryptomon.utils import decimal_to_human, cert_guess
+from cryptomon.libpcap import *
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
+from pyroute2 import IPRoute
 
 import datetime as dt
 
@@ -41,8 +43,19 @@ class CryptoMon(object):
             raise Exception("No settings provided... Aborting.")
         self.data_tag = data_tag if data_tag else ""
         self.b = BPF(text=bpf_code)
-        self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
-        BPF.attach_raw_socket(self.fn, iface)
+        # old code
+        # self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
+        # BPF.attach_raw_socket(self.fn, iface)
+        # new code! 
+        self.fn = self.b.load_func("crypto_monitor", BPF.SCHED_CLS)
+        self.ipr = IPRoute()
+        self.if_name = self.ipr.link_lookup(ifname=iface)[0]
+        self.ipr.link('set', index=self.if_name, state='up')
+        self.ipr.link('set', index=self.if_name, flags=['IFF_PROMISC'])  # set PROMISC mode...
+        # self.ipr.tc("add", "clsact", self.if_name)  # add qdisc; udpate - not needed! causes errrors. TOFIX.
+        self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
+                    name=self.fn.name, parent="ffff:fff3",
+                    classid=1, direct_action=True)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
         self.fapi_on = False
         if fapiapp:
@@ -98,6 +111,8 @@ class CryptoMon(object):
             except KeyboardInterrupt:
                 self.mongodb_client.close()
                 pass
+            finally:
+                self.ipr.tc("del-filter", "bpf", self.if_name)
 
     async def run_async(self):
         while True:
