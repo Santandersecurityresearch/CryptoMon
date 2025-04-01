@@ -38,7 +38,7 @@ def parse_argz():
                         help="Interface to hook with eBPF module.")
     parser.add_argument("--pcap",
                         help="PCAP file to be replayed on loopback.")
-    parser.add_argument("--traffic-control",
+    parser.add_argument("-tc", "--traffic-control",
                         help="Use TC to manipulate interfaces - Use for passive network SPAN/TAP data over an ethernet port.")
     args = parser.parse_args()
 
