@@ -39,7 +39,9 @@ def parse_argz():
     parser.add_argument("--pcap",
                         help="PCAP file to be replayed on loopback.")
     parser.add_argument("-tc", "--traffic-control",
+                        dest='traffic_control', action='store_true',
                         help="Use TC to manipulate interfaces - Use for passive network SPAN/TAP data over an ethernet port.")
+    parser.set_defaults(traffic_control=False)
     args = parser.parse_args()
 
     if not args.interface:
