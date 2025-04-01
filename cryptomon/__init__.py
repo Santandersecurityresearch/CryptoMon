@@ -61,7 +61,7 @@ class CryptoMon(object):
             except:
                 print("[i] 'add clsact' failed on interface, but may well work fine.")
             self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
-                        name=self.fn.name, parent="ffff:fff3",
+                        name=self.fn.name, parent="ffff:fff1",
                         classid=1, direct_action=True)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
         self.fapi_on = False
