@@ -43,7 +43,7 @@ class CryptoMon(object):
         self.data_tag = data_tag if data_tag else ""
         self.b = BPF(text=bpf_code)
         self.unload_tc_device = False
-        if load_method != "TC":  # don't use Traffic Control to manage devices
+        if load_method == "library":  # don't use Traffic Control to manage devices
             # old code
             self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
             BPF.attach_raw_socket(self.fn, iface)
@@ -63,7 +63,7 @@ class CryptoMon(object):
             # NB - the TC documentation doesn't say much about clsact yet.
             # The best ref is still: https://web.git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=1f211a1b929c804100e138c5d3d656992cfd5622
             self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
-                        name=self.fn.name, parent="ffff:fff2",
+                        name=self.fn.name, parent="ffff:fff2", # parent can be :fff2 for ingress or :fff3 for egress. 
                         classid=1, direct_action=True)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
         self.fapi_on = False
