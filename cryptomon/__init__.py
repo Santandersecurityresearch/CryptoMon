@@ -37,7 +37,7 @@ class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
                  bpf_code=bpf_ipv4_txt, pcap_file="",
-                 data_tag="", load_method="TC"):
+                 data_tag="", load_method="library"):
         if not settings:
             raise Exception("No settings provided... Aborting.")
         self.data_tag = data_tag if data_tag else ""

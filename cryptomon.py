@@ -34,10 +34,12 @@ def list_interfaces():
 
 def parse_argz():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--interface", 
+    parser.add_argument("-i", "--interface",
                         help="Interface to hook with eBPF module.")
-    parser.add_argument("--pcap", 
+    parser.add_argument("--pcap",
                         help="PCAP file to be replayed on loopback.")
+    parser.add_argument("--traffic-control",
+                        help="Use TC to manipulate interfaces - Use for passive network SPAN/TAP data over an ethernet port.")
     args = parser.parse_args()
 
     if not args.interface:
@@ -75,11 +77,16 @@ if __name__ == "__main__":
     if args.pcap:
         rerun_pcap(args.pcap)
         sys.exit(0)
+    if args.traffic_control:
+        lm = "TC"
+    else:
+        lm = "library"
     cm = CryptoMon(iface=args.interface,
                    mongodb=True,
                    settings=settings,
                    pcap_file=args.pcap,
-                   data_tag="")
+                   data_tag="",
+                   load_method=lm)
     loop = asyncio.get_event_loop()
     loop.create_task(cm.run_async())
     loop.run_forever()
