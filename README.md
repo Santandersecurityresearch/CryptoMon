@@ -46,6 +46,7 @@ You will also need to make sure that mongodb is installed and running. Once this
 
 ```python
 db.createCollection('cryptomon')
+use cryptomon
 db.createUser({user: "cryptomonUser", pwd: passwordPrompt(), roles: [{ role: "readWrite", db: "cryptomon" }]})
 ```
 
