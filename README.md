@@ -45,8 +45,8 @@ If you wish to run this service all the time in the background, then you should 
 You will also need to make sure that mongodb is installed and running. Once this is done, you should connect to the instance with `mongosh` and run the following: 
 
 ```python
-db.createCollection('cryptomon')
 use cryptomon
+db.createCollection('cryptomon')
 db.createUser({user: "cryptomonUser", pwd: passwordPrompt(), roles: [{ role: "readWrite", db: "cryptomon" }]})
 ```
 
