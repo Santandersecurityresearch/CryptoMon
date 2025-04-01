@@ -57,11 +57,11 @@ class CryptoMon(object):
             self.ipr.link('set', index=self.if_name, state='up')
             self.ipr.link('set', index=self.if_name, flags=['IFF_PROMISC'])  # set PROMISC mode...
             try:
-                self.ipr.tc("add", "clsact", self.if_name)  # add qdisc; udpate - not needed! causes errrors. TOFIX.
+                self.ipr.tc("add", "clsact", self.if_name)  # add qdisc clsact.
             except:
-                print("[i] 'add clsact' failed on interface, but may well work fine.")
+                print("[i] 'add clsact' failed on interface, but may work fine...")
             self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
-                        name=self.fn.name, parent="ffff:fff1",
+                        name=self.fn.name, parent="ffff:fff2",
                         classid=1, direct_action=True)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
         self.fapi_on = False
