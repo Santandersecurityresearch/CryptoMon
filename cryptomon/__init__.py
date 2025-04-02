@@ -37,24 +37,34 @@ class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
                  bpf_code=bpf_ipv4_txt, pcap_file="",
-                 data_tag=""):
+                 data_tag="", load_method="library"):
         if not settings:
             raise Exception("No settings provided... Aborting.")
         self.data_tag = data_tag if data_tag else ""
         self.b = BPF(text=bpf_code)
-        # old code
-        # self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
-        # BPF.attach_raw_socket(self.fn, iface)
-        # new code! 
-        self.fn = self.b.load_func("crypto_monitor", BPF.SCHED_CLS)
-        self.ipr = IPRoute()
-        self.if_name = self.ipr.link_lookup(ifname=iface)[0]
-        self.ipr.link('set', index=self.if_name, state='up')
-        self.ipr.link('set', index=self.if_name, flags=['IFF_PROMISC'])  # set PROMISC mode...
-        # self.ipr.tc("add", "clsact", self.if_name)  # add qdisc; udpate - not needed! causes errrors. TOFIX.
-        self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
-                    name=self.fn.name, parent="ffff:fff3",
-                    classid=1, direct_action=True)
+        self.unload_tc_device = False
+        if load_method == "library":  # don't use Traffic Control to manage devices
+            # old code
+            self.fn = self.b.load_func("crypto_monitor", BPF.SOCKET_FILTER)
+            BPF.attach_raw_socket(self.fn, iface)
+        else:
+            self.unload_tc_device = True
+            # new code! 
+            # most physical ethernet devices need TC to properly sniff.
+            self.fn = self.b.load_func("crypto_monitor", BPF.SCHED_CLS)
+            self.ipr = IPRoute()
+            self.if_name = self.ipr.link_lookup(ifname=iface)[0]
+            self.ipr.link('set', index=self.if_name, state='up')
+            self.ipr.link('set', index=self.if_name, flags=['IFF_PROMISC'])  # set PROMISC mode...
+            try:
+                self.ipr.tc("add", "clsact", self.if_name)  # add qdisc clsact.
+            except:
+                print("[i] 'add clsact' failed on interface, but may work fine...")
+            # NB - the TC documentation doesn't say much about clsact yet.
+            # The best ref is still: https://web.git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=1f211a1b929c804100e138c5d3d656992cfd5622
+            self.ipr.tc("add-filter", "bpf", self.if_name, ":1", fd=self.fn.fd,
+                        name=self.fn.name, parent="ffff:fff2", # parent can be :fff2 for ingress or :fff3 for egress. 
+                        classid=1, direct_action=True)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
         self.fapi_on = False
         if fapiapp:
@@ -111,7 +121,8 @@ class CryptoMon(object):
                 self.mongodb_client.close()
                 pass
             finally:
-                self.ipr.tc("del-filter", "bpf", self.if_name)
+                if self.unload_tc_device:
+                    self.ipr.tc("del-filter", "bpf", self.if_name)
 
     async def run_async(self):
         while True:
