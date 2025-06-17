@@ -7,3 +7,4 @@ tinydb==4.8.0
 uvicorn==0.30.0
 psutil==6.0.0
 scapy==2.5.0
+dnslib

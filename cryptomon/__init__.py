@@ -36,7 +36,7 @@ TCP_HDR_LEN = 20
 class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
-                 bpf_code=bpf_ipv4_txt, pcap_file="",
+                 bpf_code=bpf_ipv4_txt,
                  data_tag="", load_method="library"):
         if not settings:
             raise Exception("No settings provided... Aborting.")
@@ -138,7 +138,7 @@ class CryptoMon(object):
         net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
         tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
         tls_offset = net_packet_len + tcp_hdr_len
-        srcdst = skb_event.magic
+        # srcdst = skb_event.magic
         sess_id_len = skb_event.raw[tls_offset+43]
         supported_groups = []
         supported_sigalgs = []

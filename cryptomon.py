@@ -23,7 +23,9 @@ import argparse
 import psutil
 import sys
 from fapi.config import settings
-from scapy.all import rdpcap, sendp
+from cryptomon.pcap import parse_pcap
+from scapy.all import *
+load_layer('tls')
 
 from cryptomon import CryptoMon
 
@@ -44,7 +46,7 @@ def parse_argz():
     parser.set_defaults(traffic_control=False)
     args = parser.parse_args()
 
-    if not args.interface:
+    if not args.interface and not args.pcap:
         interfaces = list_interfaces()
         print("Available network interfaces:")
         for i, iface in enumerate(interfaces, 1):
@@ -58,35 +60,39 @@ def parse_argz():
     return args
 
 
-def rerun_pcap(pcap_file):
-    packets = rdpcap(pcap_file)
-    iface = "lo"
-    print(f"[i] Replaying packets from {str(pcap_file)}...")
-    ctr = 0
-    for packet in packets:
-        if ctr % 10 == 0:
-            print(f"[{int(100*ctr/len(packets))}%] {ctr} of {len(packets)}", end='\r')
-        try:
-            sendp(packet, iface=iface, verbose=False)
-        except Exception as e:
-            print(f"Error happened when sending packet...: {str(e)}")
-        ctr += 1
-    sys.exit(0)
+# def rerun_pcap(pcap_file):
+#     packets = rdpcap(pcap_file)
+#     iface = "lo"
+#     print(f"[i] Replaying packets from {str(pcap_file)}...")
+#     ctr = 0
+#     for packet in packets:
+#         if ctr % 10 == 0:
+#             print(f"[{int(100*ctr/len(packets))}%] {ctr} of {len(packets)}", end='\r')
+#         try:
+#             sendp(packet, iface=iface, verbose=False)
+#         except Exception as e:
+#             print(f"Error happened when sending packet...: {str(e)}")
+#         ctr += 1
+#     sys.exit(0)
 
 if __name__ == "__main__":
     task_list = []
     args = parse_argz()
-    if args.pcap:
-        rerun_pcap(args.pcap)
-        sys.exit(0)
     if args.traffic_control:
         lm = "TC"
     else:
         lm = "library"
+    if args.pcap:
+        cm = CryptoMon(iface=args.interface,
+                   mongodb=True,
+                   settings=settings,
+                   data_tag="",
+                   load_method=lm)
+        parse_pcap(args.pcap, cm)
+        sys.exit(0)
     cm = CryptoMon(iface=args.interface,
                    mongodb=True,
                    settings=settings,
-                   pcap_file=args.pcap,
                    data_tag="",
                    load_method=lm)
     loop = asyncio.get_event_loop()

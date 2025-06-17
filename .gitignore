@@ -7,6 +7,9 @@ __pycache__/
 A007653A_00001_20230626092541.pcap
 cryptomon.json
 cryptomon.service
+CryptomonData/*
+*.json
+sandbox/*
 
 # C extensions
 *.so

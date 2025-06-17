@@ -2,6 +2,7 @@ import ipaddress
 import sys
 import jc
 
+
 from cryptomon.data import TLS_HASH_ALGS, TLS_SIGALG_DICT, TLS_SIGN_ALGS
 
 
