@@ -1,5 +1,4 @@
-#from pydantic_settings import BaseSettings
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 class CommonSettings(BaseSettings):
     APP_NAME: str = "Cryptomon API"
