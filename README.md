@@ -36,7 +36,7 @@ We support a local FastAPI service, as well as logging to file via `TinyDB` or l
 
 ## Setup
 
-This setup is designed to operate under Ubuntu 22.04 "jammy". 
+This setup is designed to operate under Ubuntu 24.04 "Noble Numbat". 
 
 Firstly, `git clone` this repository. The `ubuntu-setup.sh` script will install all the necessary files. 
 
