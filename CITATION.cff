@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software in any formal or academic output, please cite it as below."
+authors:
+- family-names: "Carney"
+  given-names: "Mark"
+  orcid: "https://orcid.org/0000-0001-9372-9033"
+- family-names: "Cuthbert"
+  given-names: "Daniel"
+  orcid: "https://orcid.org/0009-0000-6443-0251"
+title: "CryptoMon - An Open Source Cryptographic Network Monitoring Tool using Python and eBPF."
+version: 2.0.4
+date-released: 2024–07-01
+url: "https://github.com/Santandersecurityresearch/CryptoMon"
