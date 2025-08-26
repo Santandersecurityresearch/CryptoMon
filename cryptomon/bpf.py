@@ -1,8 +1,7 @@
 bpf_ipv4_txt = """
 #include <uapi/linux/ptrace.h>
-#include <net/sock.h>
 #include <bcc/proto.h>
-#include <linux/bpf.h>
+#include <linux/if_ether.h>
 
 
 // here are our protocol constrants
