@@ -6,17 +6,23 @@ CryptoMon.ssh_parse_crypto; only the skb unwrapping and the header walk changed.
 """
 from cryptomon.data import SSH_SECTIONS
 from cryptomon.parsers.framing import decode_ipv4_tcp
-from cryptomon.utils import lst2int
+from cryptomon.utils import PARSE_STATS, lst2int
 
 
 def parse_ssh(raw, magic=2):
     """Parse one SSH KEXINIT frame into its algorithm lists."""
     data = {}
-    endpoints, ssh_offset = decode_ipv4_tcp(raw)
-    src_prt = endpoints['src']['port']
+    frame = decode_ipv4_tcp(raw)
+    if frame is None:
+        PARSE_STATS['unsupported_framing'] += 1
+        return {}
+    ssh_offset = frame.payload_offset
+    src_prt = frame.endpoints['src']['port']
     data['ptype'] = "server" if src_prt == 22 else "client"
-    full_packet_len = lst2int(raw[16:18])
-    data['eth'] = endpoints
+    # The IPv4 total length field, which moves with a VLAN tag; it used to be
+    # read from the fixed offset 16.
+    full_packet_len = frame.ip_total_len
+    data['eth'] = frame.endpoints
     data['ssh'] = {}
     # ssh_section_len = lst2int(raw[ssh_offset:ssh_offset+4])
     ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,

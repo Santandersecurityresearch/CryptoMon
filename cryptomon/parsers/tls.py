@@ -22,7 +22,15 @@ def parse_tls(raw, magic=1):
     supported_sigalgs = []
     supported_tls_versions = []
 
-    data['eth'], tls_offset = decode_ipv4_tcp(raw)
+    frame = decode_ipv4_tcp(raw)
+    if frame is None:
+        # Not IPv4/TCP, or too short to walk. Dropping is the honest outcome:
+        # the alternative is reading whatever bytes happen to sit at the
+        # offsets a plain frame would have used.
+        PARSE_STATS['unsupported_framing'] += 1
+        return {}
+    data['eth'] = frame.endpoints
+    tls_offset = frame.payload_offset
     sess_id_len = raw[tls_offset+43]
     data['tls'] = {}
     data['tls']['tls_versions'] = get_tls_version(raw[tls_offset + 9: tls_offset + 11])
