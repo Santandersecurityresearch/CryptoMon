@@ -18,6 +18,8 @@ __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
 
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 # from fastapi.middleware.cors import CORSMiddleware
 # from starlette.responses import FileResponse
@@ -28,20 +30,34 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from fapi.config import settings
 
+from fapi.app.indexes import ensure_indexes
 from fapi.app.routers import router as data_routers
 
-app = FastAPI()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Open the database, make sure the indexes exist, then hand over.
 
-@app.on_event("startup")
-async def startup_dbclient_and_monitor():
+    Replaces the paired @app.on_event("startup"/"shutdown") handlers, which
+    are deprecated: a single context manager keeps setup and the matching
+    teardown in one place, and guarantees the client is closed even when
+    startup raises part-way through.
+
+    Index creation lives here because this is the only moment the collection
+    is known and nothing is serving yet. It never blocks startup -- see
+    fapi/app/indexes.py.
+    """
     app.mongodb_client = AsyncIOMotorClient(settings.DB_URL)
     app.mongodb = app.mongodb_client[settings.DB_NAME]
+    try:
+        await ensure_indexes(app.mongodb["cryptomon"])
+        yield
+    finally:
+        app.mongodb_client.close()
 
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    app.mongodb_client.close()
+app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware if needed...
 # app.add_middleware(CORSMiddleware,allow_origins="*",allow_credentials=True,allow_methods=["*"],allow_headers=["*"],)

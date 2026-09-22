@@ -92,7 +92,9 @@ async def show_data(id: str, request: Request):
             dependencies=WRITE_GUARD)
 async def update_task(id: str, request: Request,
                       data: UpdateTLSDataModel = Body(...)):
-    data = {k: v for k, v in data.dict().items() if v is not None}
+    # model_dump(exclude_none=True) replaces the v1 .dict() walk; the
+    # filtering is what makes a partial update possible.
+    data = data.model_dump(exclude_none=True)
     if len(data) >= 1:
         update_result = await request.app.mongodb["cryptomon"].update_one(
             {"_id": object_id(id)}, {"$set": data}
