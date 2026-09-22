@@ -136,6 +136,48 @@ root and the data environment variables set, and it sees only what a
 single-packet reader can see -- prefer `pcapscan` unless you are specifically
 testing the live path.
 
+## Analysing a capture from the browser
+
+Start the API and open `http://127.0.0.1:8000/analyse/`. Upload a pcap or
+pcapng file and you get the same report `python -m pcapscan` prints, as a
+page: what was negotiated, which key exchanges would survive a quantum
+computer, and which post-quantum offers the server refused.
+
+The capture is read in a bounded subprocess — memory, CPU, wall-clock and
+size are all capped — and **deleted as soon as it has been analysed**. Only
+the report is kept.
+
+| setting | default | |
+|---|---|---|
+| `UPLOADS_ENABLED` | `true` | turn the feature off entirely |
+| `UPLOAD_DIR` | `/tmp/cryptomon-uploads` | where reports are kept |
+| `MAX_UPLOAD_BYTES` | `268435456` | 256 MB, enforced while reading |
+| `ANALYSIS_TIMEOUT_SECONDS` | `120` | wall-clock ceiling for one capture |
+| `REPORT_RETENTION_HOURS` | `24` | reports are swept after this; `0` keeps them |
+| `RETENTION_SWEEP_MINUTES` | `15` | how often the sweep runs |
+| `DATA_RETENTION_HOURS` | `0` | **the live collection**; `0` keeps everything |
+
+The service binds `127.0.0.1` by default, so this is a local tool unless you
+put it behind something. **If you expose it, set `API_KEY`** — uploads then
+require an `X-API-Key` header, because an open upload endpoint is an open
+invitation to spend your CPU and disk.
+
+### What is kept, and for how long
+
+A capture's SNI field is browsing history: it records which hosts a machine
+contacted and when, including every connection that happened to be in flight
+at the time. The report keeps the server names it found.
+
+Uploaded captures are deleted as soon as they are analysed. Reports are
+swept after `REPORT_RETENTION_HOURS`, and the upload form says so *before*
+the file is chosen.
+
+The live MongoDB collection is a separate decision and **does not expire by
+default**: silently discarding a monitoring database would destroy the
+historical series this project exists to build. Set `DATA_RETENTION_HOURS`
+to opt in, which installs a MongoDB TTL index on `expires_at` so the server
+does the deleting whether or not the API is running.
+
 ## FastAPI 
 
 To access the FastAPI documentation go to `http://0.0.0.0:8000/docs` to find the documentation for the backend API.

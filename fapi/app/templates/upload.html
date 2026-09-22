@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Analyse a capture — CryptoMon{% endblock %}
+{% block content %}
+<h1>Analyse a capture</h1>
+<p class="sub">
+  Upload a pcap or pcapng file and see what cryptography the connections in it
+  negotiated. The capture is read in a bounded subprocess.
+</p>
+
+<div class="card">
+  <p><strong>What happens to your capture.</strong> {{ retention }}</p>
+  <p class="note">
+    A capture records which hosts were contacted and when — including every
+    connection that was happening at the time, not just the one you are
+    looking into. The report keeps the server names it found, so treat a
+    report link the way you would treat the capture.
+  </p>
+</div>
+
+{% if not enabled %}
+<div class="card">
+  <p><strong>Upload is disabled on this deployment.</strong></p>
+  <p class="note">Set <code>UPLOADS_ENABLED=true</code> to enable it.</p>
+</div>
+{% else %}
+<form class="card" method="post" enctype="multipart/form-data" action="">
+  <label for="capture">Capture file</label>
+  <input id="capture" name="capture" type="file"
+         accept=".pcap,.pcapng,.gz,application/vnd.tcpdump.pcap" required>
+  <p class="note">
+    pcap or pcapng, gzipped or not, up to
+    {{ '%.0f'|format(max_bytes / 1048576) }} MB.
+  </p>
+  {% if key_required %}
+  <p class="note">
+    This deployment requires an <code>X-API-Key</code> header, so uploads have
+    to come from a client that can set one — <code>curl</code> rather than
+    this form.
+  </p>
+  {% endif %}
+  <button type="submit">Analyse</button>
+</form>
+
+<h2>From a terminal instead</h2>
+<p class="note">
+  The same analysis, without the browser — and the form is the only part of
+  this that needs a server at all:
+</p>
+<pre class="mono">python -m pcapscan capture.pcap
+python -m pcapscan capture.pcap -f cbom &gt; cbom.json</pre>
+{% endif %}
+{% endblock %}

@@ -13,10 +13,14 @@ from fastapi import Header, HTTPException, status
 
 from fapi.config import settings
 
+# The settings carry no prefix -- see fapi/config. This message named
+# CRYPTOMON_READ_ONLY and CRYPTOMON_API_KEY, neither of which exists, so an
+# operator who followed it exactly would set two variables that do nothing
+# and conclude the guard could not be turned off.
 READ_ONLY_DETAIL = (
-    "This deployment is read-only. Set CRYPTOMON_READ_ONLY=false to enable "
-    "writes, and set CRYPTOMON_API_KEY as well if the service is reachable "
-    "from anywhere but localhost."
+    "This deployment is read-only. Set READ_ONLY=false to enable writes, and "
+    "set API_KEY as well if the service is reachable from anywhere but "
+    "localhost."
 )
 
 

@@ -35,9 +35,27 @@ class FakeCollection:
 def test_indexes_are_created_once():
     collection = FakeCollection()
     names = asyncio.run(ensure_indexes(collection))
-    assert collection.created is CRYPTOMON_INDEXES
+    # By value rather than by identity: ensure_indexes now copies the list so
+    # that it can append an optional TTL index without mutating the module
+    # constant.
+    assert list(collection.created) == list(CRYPTOMON_INDEXES)
     assert set(names) == {"ts_desc", "ptype_ts", "tag_ts",
                           "tls_ciphersuite", "tls_kex_group"}
+
+
+def test_no_index_deletes_data_unless_retention_is_configured():
+    """
+    An index that expires documents is a different kind of thing from one
+    that speeds up a query, and it arrives only when asked for.
+    """
+    collection = FakeCollection()
+    asyncio.run(ensure_indexes(collection))
+    assert not any(getattr(i, "document", {}).get("expireAfterSeconds")
+                   is not None for i in collection.created)
+
+    collection = FakeCollection()
+    names = asyncio.run(ensure_indexes(collection, retention_hours=48))
+    assert "expires_at_ttl" in set(names)
 
 
 def test_index_creation_failure_does_not_stop_startup():

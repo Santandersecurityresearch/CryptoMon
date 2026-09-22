@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Capture report — CryptoMon{% endblock %}
+{% block content %}
+<h1>Capture report</h1>
+<p class="sub">
+  {% if meta.original_filename %}<span class="mono">{{ meta.original_filename }}</span> —
+  {% endif %}
+  {{ '{:,}'.format(meta.bytes or 0) }} bytes, analysed in
+  {{ meta.elapsed_seconds }}s.
+  <a href="json">Download as JSON</a>
+</p>
+
+{# The headline. Everything here comes from Summary.as_dict()['readiness'],
+   which is why this page does not change when Lane E adds fields to the
+   session record. #}
+<div class="card headline">
+  <div><div class="v">{{ readiness.sessions or 0 }}</div>
+       <div class="k">sessions</div></div>
+  <div><div class="v">{{ readiness.key_exchanges_performed or 0 }}</div>
+       <div class="k">key exchanges</div></div>
+  <div><div class="v {{ 'ok' if readiness.quantum_safe_fraction else 'bad' }}">
+       {% if readiness.quantum_safe_fraction is not none %}
+       {{ '%.1f'|format(readiness.quantum_safe_fraction * 100) }}%
+       {% else %}—{% endif %}</div>
+       <div class="k">quantum-safe</div></div>
+  <div><div class="v {{ 'bad' if readiness.post_quantum_refused else '' }}">
+       {{ readiness.post_quantum_refused or 0 }}</div>
+       <div class="k">PQ offers refused</div></div>
+  <div><div class="v {{ 'bad' if readiness.certificates_quantum_vulnerable else '' }}">
+       {{ readiness.certificates_quantum_vulnerable or 0 }}</div>
+       <div class="k">vulnerable certs</div></div>
+</div>
+
+<p class="note">
+  The quantum-safe figure is a share of the
+  {{ readiness.key_exchanges_performed or 0 }} sessions that
+  <em>performed</em> a key exchange, not of all
+  {{ readiness.sessions or 0 }}. {{ readiness.no_key_exchange or 0 }} resumed
+  an earlier session and performed none; counting those would understate
+  readiness by the resumption rate.
+</p>
+
+{% if summary.downgrades %}
+<h2>Post-quantum key exchanges the server refused</h2>
+<p class="note">
+  The client offered a post-quantum group and the server answered with a
+  HelloRetryRequest naming a classical one. Seen packet by packet this is
+  indistinguishable from the server accepting.
+</p>
+<table>
+  <tr><th>Host</th><th>Offered</th><th>Forced instead</th></tr>
+  {% for d in summary.downgrades[:50] %}
+  <tr><td class="mono">{{ d.hostname or '—' }}</td>
+      <td class="ok">{{ d.offered }}</td>
+      <td class="bad">{{ d.forced }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Key exchange</h2>
+<table>
+  <tr><th>Group</th><th>Assessment</th><th class="n">Sessions</th></tr>
+  {% for name, count in (summary.key_exchange or {}).items() %}
+  <tr><td class="mono">{{ name }}</td>
+      <td class="verdict-{{ verdict_of(name) }}">{{ verdict_of(name) }}</td>
+      <td class="n">{{ count }}</td></tr>
+  {% endfor %}
+</table>
+
+{% if summary.certificate_keys %}
+<h2>Certificate keys</h2>
+<table>
+  <tr><th>Key</th><th class="n">Certificates</th></tr>
+  {% for name, count in summary.certificate_keys.items() %}
+  <tr><td class="mono">{{ name }}</td><td class="n">{{ count }}</td></tr>
+  {% endfor %}
+</table>
+{% if readiness.certificates_unreadable %}
+<p class="note">
+  {{ readiness.certificates_unreadable }} session(s) sent a certificate that
+  cannot be read from a capture: in TLS 1.3 the certificate is inside the
+  encrypted flight. That is not the same as sending none.
+</p>
+{% endif %}
+{% endif %}
+
+<h2>TLS versions</h2>
+<table>
+  <tr><th>Version</th><th class="n">Sessions</th></tr>
+  {% for name, count in (summary.tls_versions or {}).items() %}
+  <tr><td class="mono">{{ name }}</td><td class="n">{{ count }}</td></tr>
+  {% endfor %}
+</table>
+{% if readiness.deprecated_tls_versions %}
+<p class="note bad">
+  {{ readiness.deprecated_tls_versions }} session(s) negotiated TLS 1.0 or
+  1.1, deprecated by RFC 8996.
+</p>
+{% endif %}
+
+<h2>Symmetric ciphers</h2>
+<table>
+  <tr><th>Cipher</th><th class="n">Sessions</th></tr>
+  {% for name, count in (summary.symmetric_strength or {}).items() %}
+  <tr><td>{{ name }}</td><td class="n">{{ count }}</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Every algorithm observed</h2>
+<table>
+  <tr><th>Kind</th><th>Name</th><th>Assessment</th><th class="n">Uses</th></tr>
+  {% for a in summary.inventory or [] %}
+  <tr><td>{{ a.kind }}</td>
+      <td class="mono">{{ a.name }}</td>
+      <td class="verdict-{{ a.verdict }}">{{ a.verdict }}</td>
+      <td class="n">{{ a.count }}</td></tr>
+  {% endfor %}
+</table>
+
+<p class="note" style="margin-top:2rem">
+  {{ retention }}
+  {% if retention_hours %}
+  This report will be gone within {{ retention_hours }} hour{{ '' if retention_hours == 1 else 's' }}
+  of being created; save the JSON if you need to keep it.
+  {% endif %}
+</p>
+<p class="note">
+  <a href="../">Analyse another capture</a>
+</p>
+{% endblock %}
