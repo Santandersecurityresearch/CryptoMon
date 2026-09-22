@@ -14,11 +14,7 @@ __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
 
 from cryptomon.bpf import bpf_ipv4_txt
-from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
-from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version
-from cryptomon.utils import decimal_to_human, cert_guess
-from cryptomon.utils import PARSE_STATS, is_grease
-from cryptomon.utils import describe_codepoint, describe_codepoints
+from cryptomon.parsers import parse_ssh, parse_tls
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
@@ -44,9 +40,7 @@ WRITE_STATS = collections.Counter()
 # handshakes must not be allowed to queue futures without bound.
 DEFAULT_MAX_PENDING = 1000
 
-ETH_HDR_LEN = 14
 IP4_HDR_LEN = 20
-TCP_HDR_LEN = 20
 
 
 class CryptoMon(object):
@@ -251,174 +245,17 @@ class CryptoMon(object):
             pass
         finally:
             self.close()
-        
+
     def tls_parse_crypto(self, skb_event):
-        data = {}
-        ETH_HDR_LEN = 14
-        IP4_HDR_LEN = 20
-        TCP_HDR_LEN = 20
+        """
+        Adapter: unwrap the eBPF SkbEvent and delegate.
 
-        net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
-        tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
-        tls_offset = net_packet_len + tcp_hdr_len
-        srcdst = skb_event.magic
-        sess_id_len = skb_event.raw[tls_offset+43]
-        supported_groups = []
-        supported_sigalgs = []
-        supported_tls_versions = []
-        src = lst2int(skb_event.raw[26:30])
-        dst = lst2int(skb_event.raw[30:34])
-        data['eth'] = {}
-        data['eth']['src'] = {}
-        data['eth']['dst'] = {}
-        data['eth']['src']['ipv4'] = decimal_to_human(str(src))
-        data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
-        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
-        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
-        data['tls'] = {}
-        data['tls']['tls_versions'] = get_tls_version(skb_event.raw[tls_offset + 9: tls_offset + 11])
-        tls_len = lst2int(skb_event.raw[tls_offset + 3: tls_offset + 5])
-        # the 44 in the next line is the various declarations of TLS type plus a 32-byte random value.
-        offset = tls_offset + 44 + sess_id_len
-        if skb_event.raw[tls_offset + 5] == 2:  # server helo
-            data['ptype'] = 'server'
-            negotiated_suite = tuple(skb_event.raw[offset:offset+2])
-            data['tls']['ciphersuite'] = describe_codepoint(
-                TLS_DICT, negotiated_suite, 'unknown_ciphersuite')
-            ext_offset = offset + 5  # SKIP negotiated suite (2 bytes), TLS section length (2 bytes) and compression method (1 byte)
-            ext_section_len = ext_offset + lst2int(skb_event.raw[offset+3:offset+5])
-            while ext_offset < ext_section_len:
-                ext_type = lst2int(skb_event.raw[ext_offset:ext_offset+2])
-                ext_len = lst2int(skb_event.raw[ext_offset+2:ext_offset+4])
-                if ext_type == 51:  # key section
-                    kex_group = tuple(skb_event.raw[ext_offset+4:ext_offset+6])
-                    data['tls']['kex_group'] = describe_codepoint(
-                        TLS_GROUPS_DICT, kex_group, 'unknown_group')
-                if ext_type == 43:  # supported TLS versions
-                    vers_offset = ext_offset + 2
-                    # Two byte length for server HELO... (1 for client HELO)
-                    vers_ext_len = lst2int(skb_event.raw[vers_offset:vers_offset+2])
-                    vers_offset += 2
-                    for i in range(0, vers_ext_len, 2):
-                        supported_tls_versions.append(skb_event.raw[vers_offset+i:vers_offset+i+2])
-                    data['tls']['tls_versions'] = [get_tls_version(x) for x in supported_tls_versions]
-                ext_offset += ext_len + 4
-        if skb_event.raw[tls_offset + 5] == 1:  # client helo
-            data['ptype'] = 'client'
-            len_ciphersuite_list = lst2int(skb_event.raw[offset:offset+2])
-            csuite_offset = offset + 2
-            proposed_suites = skb_event.raw[csuite_offset:csuite_offset + len_ciphersuite_list]
-            ciphersuites = list(zip(proposed_suites[::2], proposed_suites[1::2]))
-            data['tls']['ciphersuites'] = describe_codepoints(
-                TLS_DICT, ciphersuites, 'unknown_ciphersuite')
-            ext_offset = csuite_offset + len_ciphersuite_list
-            ext_offset = ext_offset + 1 + lst2int(skb_event.raw[ext_offset:ext_offset+1])  # compression method len, 1 byte
-            ext_offset += 2  # extension length bytes
-            while ext_offset < tls_len-1:
-                ext_type = lst2int(skb_event.raw[ext_offset:ext_offset+2])
-                ext_len = lst2int(skb_event.raw[ext_offset+2:ext_offset+4])
-                if ext_type == 22:  # EtM is enabled
-                    data['tls']['EtM'] = True
-                else:
-                    data['tls']['EtM'] = False
-                if ext_type == 43:  # supported TLS versions
-                    vers_offset = ext_offset + 4
-                    vers_ext_len = skb_event.raw[vers_offset:vers_offset+1][0]  # just one byte...
-                    vers_offset += 1
-                    for i in range(0, vers_ext_len, 2):
-                        supported_tls_versions.append(skb_event.raw[vers_offset+i:vers_offset+i+2])
-                    data['tls']['tls_versions'] = [get_tls_version(x) for x in supported_tls_versions]
-                if ext_type == 0:  # check if '0000' indicating server_name TLS parameter
-                    name_offset = ext_offset + 7 # shift 7 bytes to find length of hostname
-                    len_hostname = lst2int(skb_event.raw[name_offset:name_offset+2]) # get length of hostname
-                    name_offset += 2  # skip over the length bytes we just enumerated
-                    data['tls']['hostname'] = lst2str(skb_event.raw[name_offset:name_offset+len_hostname])
-                if ext_type == 10:  # supported ECC groups
-                    group_offset = ext_offset + 4
-                    group_list_len = lst2int(skb_event.raw[group_offset:group_offset + 2])
-                    group_offset += 2
-                    for i in range(0, group_list_len, 2):
-                        supported_groups.append(tuple(skb_event.raw[group_offset+i:group_offset+i+2]))
-                    data['tls']['groups'] = describe_codepoints(
-                        TLS_GROUPS_DICT, supported_groups, 'unknown_group')
-                if ext_type == 13: # supported Signature Algorithms
-                    sigalg_offset = ext_offset + 4
-                    sigalt_list_len = lst2int(skb_event.raw[sigalg_offset:sigalg_offset + 2])
-                    sigalg_offset += 2
-                    for i in range(0, sigalt_list_len, 2):
-                        supported_sigalgs.append(tuple(skb_event.raw[sigalg_offset+i:sigalg_offset+i+2]))
-                    data['tls']['sigalgs'] = parse_sigalgs(supported_sigalgs)
-                if ext_type == 51: # key share extension
-                    # The client offers a *list* of key shares, and Chrome and
-                    # Edge put a GREASE entry first (RFC 8701). Taking entry
-                    # zero therefore recorded the padding as the negotiated
-                    # group on every Chromium ClientHello; walk to the first
-                    # real group instead.
-                    shares_len = lst2int(skb_event.raw[ext_offset+4:ext_offset+6])
-                    share_offset = ext_offset + 6
-                    share_end = share_offset + shares_len
-                    kex_group = None
-                    while share_offset + 4 <= share_end:
-                        group = tuple(skb_event.raw[share_offset:share_offset+2])
-                        key_len = lst2int(skb_event.raw[share_offset+2:share_offset+4])
-                        if not is_grease(group):
-                            kex_group = group
-                            break
-                        PARSE_STATS['grease_filtered'] += 1
-                        share_offset += 4 + key_len
-                    if kex_group is not None:
-                        data['tls']['kex_group'] = describe_codepoint(
-                            TLS_GROUPS_DICT, kex_group, 'unknown_group')
-                ext_offset += ext_len + 4
-        # next, attempt to get a cert if present...
-        if "ptype" not in data.keys():
-            # this means that it wasn't a hello packet, so drop
-            return {}
-        cert = {}
-        try:
-            cert = cert_guess(skb_event.raw)
-        except Exception:
-            # Counted, not printed: this runs per packet at line rate, so the
-            # counter is the surface. Read it with cryptomon.utils.PARSE_STATS.
-            PARSE_STATS['cert_error'] += 1
-        if cert:
-            data['tls']['certificate'] = cert
-        return data
-    
+        The parsing itself lives in cryptomon.parsers.tls as a pure function,
+        so it can be driven from a capture file as easily as from the perf
+        buffer. Signature unchanged.
+        """
+        return parse_tls(skb_event.raw, skb_event.magic)
+
     def ssh_parse_crypto(self, skb_event):
-        data = {}
-        ETH_HDR_LEN = 14
-        IP4_HDR_LEN = 20
-        # TCP_HDR_LEN = 20
-
-        net_packet_len = ETH_HDR_LEN + IP4_HDR_LEN
-        src_prt = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
-        # dst_prt = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
-        data['ptype'] = "server" if src_prt == 22 else "client"
-        full_packet_len = lst2int(skb_event.raw[16:18])
-        tcp_hdr_len = ((skb_event.raw[net_packet_len+12:net_packet_len+13][0] >> 4) * 4) # get tcp header len
-        ssh_offset = net_packet_len + tcp_hdr_len
-        src = lst2int(skb_event.raw[26:30])
-        dst = lst2int(skb_event.raw[30:34])
-        data['eth'] = {}
-        data['eth']['src'] = {}
-        data['eth']['dst'] = {}
-        data['eth']['src']['ipv4'] = decimal_to_human(str(src))
-        data['eth']['dst']['ipv4'] = decimal_to_human(str(dst))
-        data['eth']['src']['port'] = lst2int(skb_event.raw[net_packet_len:net_packet_len+2])
-        data['eth']['dst']['port'] = lst2int(skb_event.raw[net_packet_len+2:net_packet_len+4])
-        data['ssh'] = {}
-        # ssh_section_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
-        ssh_offset = ssh_offset + 6 + 16  # 6 bytes for packet length, padding length,
-                                          # and message code then 16 bytes for SSH cookie
-
-        for sec in SSH_SECTIONS:
-            if not (ssh_offset < full_packet_len):
-                break
-            sec_len = lst2int(skb_event.raw[ssh_offset:ssh_offset+4])
-            ssh_offset += 4
-            str_block = skb_event.raw[ssh_offset:ssh_offset+sec_len]  # get the block of text
-            str_raw = "".join([chr(x) for x in str_block])
-            data['ssh'][sec] = str_raw.split(',')  # split on commas
-            ssh_offset += sec_len
-        return data
+        """Adapter: unwrap the eBPF SkbEvent and delegate. See tls_parse_crypto."""
+        return parse_ssh(skb_event.raw, skb_event.magic)
