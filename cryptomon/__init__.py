@@ -17,6 +17,8 @@ from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT, SSH_SECTIONS
 from cryptomon.utils import lst2int, lst2str, parse_sigalgs, get_tls_version
 from cryptomon.utils import decimal_to_human, cert_guess
+from cryptomon.utils import PARSE_STATS, is_grease
+from cryptomon.utils import describe_codepoint, describe_codepoints
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
@@ -80,7 +82,7 @@ class CryptoMon(object):
             self.ipr.link('set', index=self.if_name, flags=['IFF_PROMISC'])  # set PROMISC mode...
             try:
                 self.ipr.tc("add", "clsact", self.if_name)  # add qdisc clsact.
-            except:
+            except Exception:
                 print("[i] 'add clsact' failed on interface, but may work fine...")
             # NB - the TC documentation doesn't say much about clsact yet.
             # The best ref is still: https://web.git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=1f211a1b929c804100e138c5d3d656992cfd5622
@@ -182,7 +184,8 @@ class CryptoMon(object):
         if skb_event.raw[tls_offset + 5] == 2:  # server helo
             data['ptype'] = 'server'
             negotiated_suite = tuple(skb_event.raw[offset:offset+2])
-            data['tls']['ciphersuite'] = TLS_DICT[negotiated_suite]
+            data['tls']['ciphersuite'] = describe_codepoint(
+                TLS_DICT, negotiated_suite, 'unknown_ciphersuite')
             ext_offset = offset + 5  # SKIP negotiated suite (2 bytes), TLS section length (2 bytes) and compression method (1 byte)
             ext_section_len = ext_offset + lst2int(skb_event.raw[offset+3:offset+5])
             while ext_offset < ext_section_len:
@@ -190,7 +193,8 @@ class CryptoMon(object):
                 ext_len = lst2int(skb_event.raw[ext_offset+2:ext_offset+4])
                 if ext_type == 51:  # key section
                     kex_group = tuple(skb_event.raw[ext_offset+4:ext_offset+6])
-                    data['tls']['kex_group'] = TLS_GROUPS_DICT[kex_group]
+                    data['tls']['kex_group'] = describe_codepoint(
+                        TLS_GROUPS_DICT, kex_group, 'unknown_group')
                 if ext_type == 43:  # supported TLS versions
                     vers_offset = ext_offset + 2
                     # Two byte length for server HELO... (1 for client HELO)
@@ -206,7 +210,8 @@ class CryptoMon(object):
             csuite_offset = offset + 2
             proposed_suites = skb_event.raw[csuite_offset:csuite_offset + len_ciphersuite_list]
             ciphersuites = list(zip(proposed_suites[::2], proposed_suites[1::2]))
-            data['tls']['ciphersuites'] = [TLS_DICT.get(x, 'Reserved') for x in ciphersuites]
+            data['tls']['ciphersuites'] = describe_codepoints(
+                TLS_DICT, ciphersuites, 'unknown_ciphersuite')
             ext_offset = csuite_offset + len_ciphersuite_list
             ext_offset = ext_offset + 1 + lst2int(skb_event.raw[ext_offset:ext_offset+1])  # compression method len, 1 byte
             ext_offset += 2  # extension length bytes
@@ -235,7 +240,8 @@ class CryptoMon(object):
                     group_offset += 2
                     for i in range(0, group_list_len, 2):
                         supported_groups.append(tuple(skb_event.raw[group_offset+i:group_offset+i+2]))
-                    data['tls']['groups'] = [TLS_GROUPS_DICT.get(x, 'Reserved') for x in supported_groups]
+                    data['tls']['groups'] = describe_codepoints(
+                        TLS_GROUPS_DICT, supported_groups, 'unknown_group')
                 if ext_type == 13: # supported Signature Algorithms
                     sigalg_offset = ext_offset + 4
                     sigalt_list_len = lst2int(skb_event.raw[sigalg_offset:sigalg_offset + 2])
@@ -244,8 +250,26 @@ class CryptoMon(object):
                         supported_sigalgs.append(tuple(skb_event.raw[sigalg_offset+i:sigalg_offset+i+2]))
                     data['tls']['sigalgs'] = parse_sigalgs(supported_sigalgs)
                 if ext_type == 51: # key share extension
-                    kex_group = tuple(skb_event.raw[ext_offset+6:ext_offset+8])
-                    data['tls']['kex_group'] = TLS_GROUPS_DICT.get(kex_group, 'Reserved')
+                    # The client offers a *list* of key shares, and Chrome and
+                    # Edge put a GREASE entry first (RFC 8701). Taking entry
+                    # zero therefore recorded the padding as the negotiated
+                    # group on every Chromium ClientHello; walk to the first
+                    # real group instead.
+                    shares_len = lst2int(skb_event.raw[ext_offset+4:ext_offset+6])
+                    share_offset = ext_offset + 6
+                    share_end = share_offset + shares_len
+                    kex_group = None
+                    while share_offset + 4 <= share_end:
+                        group = tuple(skb_event.raw[share_offset:share_offset+2])
+                        key_len = lst2int(skb_event.raw[share_offset+2:share_offset+4])
+                        if not is_grease(group):
+                            kex_group = group
+                            break
+                        PARSE_STATS['grease_filtered'] += 1
+                        share_offset += 4 + key_len
+                    if kex_group is not None:
+                        data['tls']['kex_group'] = describe_codepoint(
+                            TLS_GROUPS_DICT, kex_group, 'unknown_group')
                 ext_offset += ext_len + 4
         # next, attempt to get a cert if present...
         if "ptype" not in data.keys():
@@ -254,8 +278,10 @@ class CryptoMon(object):
         cert = {}
         try:
             cert = cert_guess(skb_event.raw)
-        except:
-            pass
+        except Exception:
+            # Counted, not printed: this runs per packet at line rate, so the
+            # counter is the surface. Read it with cryptomon.utils.PARSE_STATS.
+            PARSE_STATS['cert_error'] += 1
         if cert:
             data['tls']['certificate'] = cert
         return data
