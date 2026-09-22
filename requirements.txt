@@ -21,4 +21,4 @@ cryptography>=44.0.2,<45
 # fastapi today, which is exactly why they are pinned here: a transitive
 # dependency is one somebody else's release notes can remove.
 jinja2==3.1.6
-python-multipart==0.0.20
+python-multipart==0.0.31
