@@ -1,6 +1,10 @@
 import ipaddress
 import sys
-import jc
+
+try:
+    import jc
+except ImportError:  # only cert_guess() needs it; see cert_guess() below
+    jc = None
 
 from cryptomon.data import TLS_HASH_ALGS, TLS_SIGALG_DICT, TLS_SIGN_ALGS
 
@@ -78,6 +82,10 @@ def cert_guess(in_array):
     output = {}
     if match == 0:
         return output  # no certificato
+    if jc is None:
+        print("[!] jc is not installed, so certificates cannot be parsed. "
+              "Install it with `pip install jc`.", file=sys.stderr)
+        return output
     try:
         cert_len = lst2int(in_array[match+7:match+10])
         cert_begin = match + 10

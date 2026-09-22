@@ -20,13 +20,17 @@ from cryptomon.utils import decimal_to_human, cert_guess
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
-from pyroute2 import IPRoute
 
 import datetime as dt
 
-from bcc import BPF
 import ctypes as ct
 import asyncio
+
+# bcc and pyroute2 are Linux-only and are supplied by the distribution
+# (bpfcc-tools / python3-pyroute2, see ubuntu-setup.sh), not by pip. They are
+# imported lazily in CryptoMon.__init__ so that everything else in this
+# package -- in particular the packet parsers -- can be imported and tested on
+# a machine that has neither, which is what CI and non-Linux development need.
 
 ETH_HDR_LEN = 14
 IP4_HDR_LEN = 20
@@ -41,6 +45,15 @@ class CryptoMon(object):
         if not settings:
             raise Exception("No settings provided... Aborting.")
         self.data_tag = data_tag if data_tag else ""
+        try:
+            from bcc import BPF
+        except ImportError as exc:
+            raise Exception(
+                "bcc is not available, so the live monitor cannot start. It is "
+                "Linux-only and comes from your distribution rather than pip: "
+                "run ubuntu-setup.sh, or `apt-get install bpfcc-tools "
+                "python3-bpfcc`. Parsing a capture offline does not need it."
+            ) from exc
         self.b = BPF(text=bpf_code)
         self.unload_tc_device = False
         if load_method == "library":  # don't use Traffic Control to manage devices
@@ -52,6 +65,15 @@ class CryptoMon(object):
             # new code! 
             # most physical ethernet devices need TC to properly sniff.
             self.fn = self.b.load_func("crypto_monitor", BPF.SCHED_CLS)
+            try:
+                from pyroute2 import IPRoute
+            except ImportError as exc:
+                raise Exception(
+                    "pyroute2 is not available, so load_method='tc' cannot "
+                    "attach to the interface. Install it from your "
+                    "distribution (`apt-get install python3-pyroute2`), or use "
+                    "load_method='library' to attach a raw socket instead."
+                ) from exc
             self.ipr = IPRoute()
             self.if_name = self.ipr.link_lookup(ifname=iface)[0]
             self.ipr.link('set', index=self.if_name, state='up')
