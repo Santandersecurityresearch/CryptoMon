@@ -296,7 +296,8 @@ def test_the_single_frame_path_reports_a_truncated_hello(name):
     whole = next(m for m in messages if m.name == 'client_hello')
     assert len(whole.body) > 1800
     reassembled = parse_hello_message(whole.msg_type, whole.body)['tls']
-    assert reassembled['hostname'].endswith('badssl.com')
+    hostname = reassembled['hostname']
+    assert hostname == 'badssl.com' or hostname.endswith('.badssl.com')
     # The fragment cannot carry as many ciphersuites and groups as the whole
     # message, and it is the extensions at the end that get lost.
     assert len(reassembled.get('groups', [])) >= len(live[0].get('groups', []))
