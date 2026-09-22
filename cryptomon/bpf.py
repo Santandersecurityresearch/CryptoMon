@@ -1,78 +1,113 @@
-bpf_ipv4_txt = """
+bpf_text = """
 #include <uapi/linux/ptrace.h>
 #include <net/sock.h>
 #include <bcc/proto.h>
 #include <linux/bpf.h>
 
+#ifndef TC_ACT_OK
+#define TC_ACT_OK 0
+#endif
 
-// here are our protocol constrants
+// transport protocols
 #define IP_TCP 6
-#define IP_UDP 17
-#define IP_ICMP 1
-#define ETH_HLEN 14
+
+// link layer
+#define ETH_HLEN      14
+#define ETH_P_IP      0x0800
+#define ETH_P_IPV6    0x86DD
+#define ETH_P_8021Q   0x8100
+#define ETH_P_8021AD  0x88A8
+#define ETH_P_QINQ1   0x9100
+#define ETH_P_QINQ2   0x9200
+#define MAX_VLAN_TAGS 2
+
+// IPv6 moved options out of the fixed header into a chain, so the transport
+// header is only found by walking it. The walk must be bounded for the
+// verifier, and a chain longer than this is hostile rather than real.
+#define IP6_HDR_LEN   40
+#define IP6_HOPOPTS   0
+#define IP6_ROUTING   43
+#define IP6_FRAGMENT  44
+#define IP6_NONEXT    59
+#define IP6_DSTOPTS   60
+#define IP6_MOBILITY  135
+#define MAX_IP6_EXT   4
 
 BPF_PERF_OUTPUT(skb_events);
 
-// this is our ethernet header
-struct eth_hdr {
-    unsigned char   h_dest[ETH_ALEN];
-    unsigned char   h_source[ETH_ALEN];
-    unsigned short  h_proto;
-};
-
-// this is the main program that monitors all crypto handshakes
-// when each packet is received, it will be processed by this function
-
-
+// Monitors crypto handshakes. Every offset below is computed from the packet
+// rather than assumed, so VLAN-tagged frames, IPv4 options and IPv6 all reach
+// the same port and handshake checks.
+//
+// Note the packet bytes themselves are what userspace parses: pass_value only
+// carries which parser to use (1 = TLS, 2 = SSH), and perf_submit_skb hands
+// over the whole frame.
 int crypto_monitor(struct __sk_buff *skb)
 {
-    u64 magic = 0xfaceb00c; // our magic number
-    u8 *cursor = 0;
-    u32 saddr, daddr; // source and destination port
-    unsigned short sport, dport;
-    long prts = 0;
-    long one = 1;
     u64 pass_value = 0;
+    u32 nh_off = ETH_HLEN;
+    u16 ethertype = load_half(skb, 12);
 
-    struct ethernet_t *ethernet = cursor_advance(cursor, sizeof(*ethernet));
-    struct ip_t *ip = cursor_advance(cursor, sizeof(*ip));
-    struct tcp_t *tcp = cursor_advance(cursor, sizeof(*tcp));
-    if (ip->ver != 4)
-        return 0;
-    if (ip->nextp != IP_TCP) // check what the protocol is
-    {
-        if (ip -> nextp != IP_UDP)
-        {
-            if (ip -> nextp != IP_ICMP)
-                return 0;
+    // --- link layer: step over any stacked VLAN tags --------------------
+    #pragma unroll
+    for (int i = 0; i < MAX_VLAN_TAGS; i++) {
+        if (ethertype == ETH_P_8021Q  || ethertype == ETH_P_8021AD ||
+            ethertype == ETH_P_QINQ1  || ethertype == ETH_P_QINQ2) {
+            ethertype = load_half(skb, nh_off + 2);
+            nh_off += 4;
         }
     }
 
-    saddr = ip -> src;
-    daddr = ip -> dst;
-    // extract the source and destination ports
-    sport = tcp -> src_port;
-    dport = tcp -> dst_port;
+    u32 proto  = 0;
+    u32 th_off = 0;
 
-    pass_value = saddr;
-    pass_value = pass_value << 32;
-    pass_value = pass_value + daddr;
+    // --- network layer ---------------------------------------------------
+    if (ethertype == ETH_P_IP) {
+        u8  vhl = load_byte(skb, nh_off);
+        u32 ihl = (vhl & 0x0f) << 2;
+        if ((vhl >> 4) != 4 || ihl < 20)
+            return TC_ACT_OK;
+        proto  = load_byte(skb, nh_off + 9);
+        th_off = nh_off + ihl;
+    } else if (ethertype == ETH_P_IPV6) {
+        proto  = load_byte(skb, nh_off + 6);
+        th_off = nh_off + IP6_HDR_LEN;
 
-    u32  tcp_header_length = 0;
-    u32  ip_header_length = 0;
-    u32  payload_offset = 0;
-    u32  payload_length = 0;
+        #pragma unroll
+        for (int i = 0; i < MAX_IP6_EXT; i++) {
+            if (proto == IP6_HOPOPTS || proto == IP6_ROUTING ||
+                proto == IP6_DSTOPTS || proto == IP6_MOBILITY) {
+                u8  next = load_byte(skb, th_off);
+                u32 elen = (((u32)load_byte(skb, th_off + 1)) + 1) << 3;
+                proto   = next;
+                th_off += elen;
+            } else if (proto == IP6_FRAGMENT) {
+                // A non-initial fragment carries no transport header, so
+                // anything read at th_off would be payload wearing a hat.
+                if ((load_half(skb, th_off + 2) >> 3) != 0)
+                    return TC_ACT_OK;
+                proto   = load_byte(skb, th_off);
+                th_off += 8;
+            }
+        }
+    } else {
+        return TC_ACT_OK;
+    }
 
-    // IP header length is ip->hlen times 4
-    ip_header_length = ip->hlen << 2;    //SHL 2 -> *4 multiply
+    // Only TCP. The previous program also let UDP and ICMP through to the
+    // port checks below, then read a TCP data offset out of them -- the
+    // userspace parsers refuse anything but TCP anyway, so those events were
+    // decoded into nothing. QUIC needs its own path, not this one.
+    if (proto != IP_TCP)
+        return TC_ACT_OK;
 
-    // similarly for TCP header len
-    tcp_header_length = tcp->offset << 2;
+    // --- transport layer ---------------------------------------------------
+    u16 sport = load_half(skb, th_off);
+    u16 dport = load_half(skb, th_off + 2);
+    u32 tcp_header_length = (load_byte(skb, th_off + 12) >> 4) << 2;
+    u32 payload_offset = th_off + tcp_header_length;
 
-    payload_offset = ETH_HLEN + ip_header_length + tcp_header_length;
-    payload_length = ip->tlen - ip_header_length - tcp_header_length;
-
-    // here's where we filter for the ports we are interested in 
+    // here's where we filter for the ports we are interested in
     if (dport == 443   || sport == 443   || // port 443  for TLS
         dport == 990   || sport == 990   || // port 990 for FTPS
         dport == 3389  || sport == 3389  || // port 3389 (RDP TLS)
@@ -93,7 +128,7 @@ int crypto_monitor(struct __sk_buff *skb)
                                        &pass_value, sizeof(pass_value));
             return -1;  // return -1 to keep packet, return 0 to drop packet.
         }
-        return -1; 
+        return -1;
     }
 
     if (dport == 22 || sport == 22)
@@ -111,3 +146,7 @@ int crypto_monitor(struct __sk_buff *skb)
     }
     return TC_ACT_OK;
 }"""
+
+# The program handles IPv4 and IPv6; the old name is kept so that anything
+# importing it, including a pinned release, keeps working.
+bpf_ipv4_txt = bpf_text
