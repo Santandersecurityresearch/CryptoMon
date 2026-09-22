@@ -1,26 +1,27 @@
 """
 Link and network framing.
 
-ETH_HDR_LEN and IP4_HDR_LEN are hard-coded to 14 and 20, and every subsequent
-offset derives from them, so a VLAN tag (+4), QinQ (+8) or IPv6 (+20) shifts
-the whole TLS record out from under the parser. It does not fail: it reads the
-wrong bytes and reports plausible, wrong values -- which is the dangerous
-shape of the bug and the reason it is worth a test before the fix.
+Header lengths are derived from the packet, so a VLAN tag (+4), QinQ (+8) or
+IPv4 options (up to +40) no longer shift the TLS record out from under the
+parser. The failure mode before this mattered more than the failure: nothing
+raised, the parser simply read the wrong bytes and reported plausible, wrong
+ciphersuites.
 
-The xfail cases below fail by design today. They flip to xpass the moment
-header lengths are derived from the packet, which is how this suite proves
-that change works rather than taking it on trust. bpf.py already gets this
-right (ip_header_length = ip->hlen << 2); only the Python side is fixed.
+Every fixture here carries the *same* ClientHello, lifted from a real capture,
+so any difference in output is the framing and nothing else.
 """
 import pathlib
 
 import pytest
 
 from cryptomon import CryptoMon
-from cryptomon.data import TLS_DICT
-from cryptomon.utils import describe_codepoints
+from cryptomon.parsers.framing import decode_ipv4_tcp
+from cryptomon.utils import PARSE_STATS, reset_parse_stats
 
 from conftest import skb
+
+# Merge gate: synthetic frames only, no capture corpus needed.
+pytestmark = pytest.mark.smoke
 
 SYNTHETIC = pathlib.Path(__file__).resolve().parent / "fixtures" / "synthetic"
 
@@ -37,43 +38,68 @@ def suites(name):
 
 
 def test_plain_ipv4_is_the_control():
-    """If this fails the others tell you nothing."""
+    """If this fails the rest tell you nothing."""
     assert suites("plain_ipv4"), "baseline Ethernet/IPv4 ClientHello did not parse"
 
 
-def test_all_framings_carry_the_same_handshake():
-    """The four fixtures differ only in framing, lifted from one ClientHello."""
-    assert SYNTHETIC.joinpath("vlan.pcap").is_file()
+def test_fixtures_differ_only_in_framing():
     assert len(frame("vlan")) == len(frame("plain_ipv4")) + 4
     assert len(frame("qinq")) == len(frame("plain_ipv4")) + 8
+    assert len(frame("ip_options")) == len(frame("plain_ipv4")) + 4
 
 
-@pytest.mark.xfail(reason="ETH_HDR_LEN is fixed at 14; VLAN shifts every "
-                          "offset by 4 (dynamic framing work)",
-                   strict=False)
-def test_vlan_tagged_clienthello():
-    assert suites("vlan") == suites("plain_ipv4")
+@pytest.mark.parametrize("name", ["vlan", "qinq", "ip_options"])
+def test_extra_headers_do_not_shift_the_handshake(name):
+    """802.1Q, QinQ and IPv4 options all used to silently corrupt the parse."""
+    assert suites(name) == suites("plain_ipv4"), (
+        f"{name} framing produced different output from the identical "
+        f"handshake without it")
 
 
-@pytest.mark.xfail(reason="QinQ shifts every offset by 8 (dynamic framing work)",
-                   strict=False)
-def test_qinq_tagged_clienthello():
-    assert suites("qinq") == suites("plain_ipv4")
+def test_vlan_endpoints_are_read_from_the_right_offsets():
+    """Not just the payload -- the addresses and ports move with the tag too."""
+    plain = CryptoMon.tls_parse_crypto(None, skb(frame("plain_ipv4")))
+    tagged = CryptoMon.tls_parse_crypto(None, skb(frame("vlan")))
+    assert tagged["eth"] == plain["eth"]
+    assert tagged["eth"]["dst"]["port"] == 443
 
 
-@pytest.mark.xfail(reason="IP4_HDR_LEN is fixed at 20 and there is no IPv6 "
-                          "path (IPv6 work, issue #19)",
-                   strict=False)
+# --------------------------------------------------------------- refusals
+@pytest.mark.parametrize("name", ["udp", "ipv6"])
+def test_unreadable_framing_is_refused_not_guessed(name):
+    """
+    Returning {} drops the packet, which is what a caller already does with a
+    falsy result. The alternative is reading whatever bytes happen to sit
+    where a plain IPv4/TCP frame would have put them.
+    """
+    assert decode_ipv4_tcp(frame(name)) is None
+    reset_parse_stats()
+    assert CryptoMon.tls_parse_crypto(None, skb(frame(name))) == {}
+    assert PARSE_STATS["unsupported_framing"] == 1
+
+
+def test_truncated_frames_are_refused():
+    full = frame("plain_ipv4")
+    for length in (0, 13, 14, 33, 53):
+        assert decode_ipv4_tcp(full[:length]) is None, f"accepted {length} bytes"
+
+
+def test_malformed_ihl_is_refused():
+    raw = bytearray(frame("plain_ipv4"))
+    raw[14] = 0x44          # version 4, IHL 4 -> below the 20-byte minimum
+    assert decode_ipv4_tcp(bytes(raw)) is None
+
+
+def test_vlan_stack_depth_is_bounded():
+    """A frame claiming endless tags must not walk off the end."""
+    raw = bytearray(frame("plain_ipv4"))
+    for offset in range(12, 40, 4):
+        raw[offset:offset + 2] = (0x81, 0x00)     # another 802.1Q tag
+    assert decode_ipv4_tcp(bytes(raw)) is None
+
+
+@pytest.mark.xfail(reason="IPv6 is issue #19; decode_ipv4_tcp refuses it "
+                          "explicitly rather than misparsing it",
+                   strict=True)
 def test_ipv6_clienthello():
     assert suites("ipv6") == suites("plain_ipv4")
-
-
-def test_wrong_framing_is_silent_not_loud():
-    """
-    Document the failure *mode*, not just the failure.
-
-    A VLAN-tagged frame does not raise; it produces different output from the
-    identical handshake without the tag. Silent wrongness is why this needs a
-    test rather than a bug report.
-    """
-    assert suites("vlan") != suites("plain_ipv4") or True   # informational

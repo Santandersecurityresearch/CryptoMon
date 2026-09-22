@@ -15,7 +15,8 @@ Writes tests/fixtures/synthetic/*.pcap, which are committed.
 import pathlib
 import sys
 
-from scapy.all import (Dot1Q, Ether, IP, IPv6, PcapReader, TCP, Raw, wrpcap)
+from scapy.all import (Dot1Q, Ether, IP, IPOption_NOP, IPv6, PcapReader,
+                       TCP, UDP, Raw, wrpcap)
 
 HERE = pathlib.Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures"
@@ -50,9 +51,23 @@ def main():
                 / IP(src="10.0.0.1", dst="10.0.0.2") / TCP(**tcp) / Raw(payload),
         "ipv6": Ether(**eth) / IPv6(src="2001:db8::1", dst="2001:db8::2")
                 / TCP(**tcp) / Raw(payload),
+        # IHL 6 rather than 5: four bytes of options push the TCP header out.
+        # bpf.py handles this (ip->hlen << 2); the Python side did not.
+        "ip_options": Ether(**eth)
+                      / IP(src="10.0.0.1", dst="10.0.0.2",
+                           options=[IPOption_NOP(), IPOption_NOP(),
+                                    IPOption_NOP(), IPOption_NOP()])
+                      / TCP(**tcp) / Raw(payload),
+        # Not TCP at all: must be refused, not read at TCP's offsets.
+        "udp": Ether(**eth) / IP(src="10.0.0.1", dst="10.0.0.2")
+               / UDP(sport=54321, dport=443) / Raw(payload),
     }
     for name, pkt in cases.items():
         path = OUT / f"{name}.pcap"
+        # Fixed timestamp so regenerating produces byte-identical files.
+        # scapy otherwise stamps "now", and every re-run shows up as a diff
+        # on a committed fixture that did not actually change.
+        pkt.time = 1733875200          # 2024-12-11T00:00:00Z, the corpus date
         wrpcap(str(path), [pkt])
         print(f"  wrote  synthetic/{name}.pcap  {path.stat().st_size} bytes")
     print(f"\npayload lifted from {source} ({len(payload)} bytes)")
