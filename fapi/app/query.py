@@ -24,7 +24,8 @@ MAX_VALUE_LENGTH = 256
 
 QUERYABLE_FIELDS = frozenset(
     ["ptype", "tag", "ts", "_id",
-     "eth.src.ipv4", "eth.src.port", "eth.dst.ipv4", "eth.dst.port",
+     "eth.src.ipv4", "eth.src.ipv6", "eth.src.port",
+     "eth.dst.ipv4", "eth.dst.ipv6", "eth.dst.port",
      "tls.tls_versions", "tls.ciphersuite", "tls.ciphersuites",
      "tls.kex_group", "tls.groups", "tls.sigalgs", "tls.hostname"]
     # keep the SSH fields in step with the parser rather than restating them

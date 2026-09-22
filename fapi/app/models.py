@@ -8,7 +8,11 @@ JSONStructure = Union[List[Any], Dict[AnyStr, Any]]
 
 
 class IPModel(BaseModel):
-    ipv4: str = "0.0.0.0"
+    # Exactly one of these is set, named for the family it holds. Both are
+    # optional rather than defaulted: "0.0.0.0" on an IPv6 record would be a
+    # plausible-looking lie, and a missing address should read as missing.
+    ipv4: Optional[str] = None
+    ipv6: Optional[str] = None
     port: int = 80
 
 

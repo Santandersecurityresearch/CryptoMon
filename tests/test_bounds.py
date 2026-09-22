@@ -11,6 +11,7 @@ These tests do not check *what* is parsed -- the oracle tests do that. They
 check that nothing raises, nothing hangs, and nothing reads outside the frame,
 whatever bytes arrive.
 """
+import pathlib
 import time
 import types
 
@@ -30,13 +31,33 @@ def parse_both(raw):
             CryptoMon.ssh_parse_crypto(None, skb(raw, 2)))
 
 
+SYNTHETIC = (pathlib.Path(__file__).resolve().parent
+             / "fixtures" / "synthetic")
+
+
 @pytest.fixture(scope="module")
 def sample_frames():
+    """Real captures, plus every synthetic framing.
+
+    The corpus is all Ethernet/IPv4, so without the synthetic frames the
+    IPv6 header walk and the VLAN path would never be fuzzed at all.
+    """
+    scapy_all = pytest.importorskip("scapy.all")
     frames = []
     for name in fixture_names():
         frames.extend(list(read_frames(name).values())[:3])
+    for pcap in sorted(SYNTHETIC.glob("*.pcap")):
+        with scapy_all.PcapReader(str(pcap)) as reader:
+            frames.append(bytes(next(iter(reader))))
     assert frames, "no fixture frames available"
     return frames
+
+
+@pytest.fixture(scope="module")
+def ipv6_frame():
+    scapy_all = pytest.importorskip("scapy.all")
+    with scapy_all.PcapReader(str(SYNTHETIC / "ipv6.pcap")) as reader:
+        return bytes(next(iter(reader)))
 
 
 def test_truncation_at_every_length(sample_frames):
@@ -129,3 +150,35 @@ def test_cert_guess_declared_length_beyond_the_frame():
     array = ([0x00] * 5 + [0x0B] + [0x00] + [0xFF, 0xFF, 0xFF]
              + [0x30, 0x82, 0xFF, 0xFF, 0x30] + [0x00] * 30)
     assert isinstance(cert_guess(array), dict)
+
+
+def test_ipv6_truncation_at_every_length(ipv6_frame):
+    """
+    The IPv6 header is 40 bytes and its extension chain is walked, so there
+    are more places to run off the end than IPv4 has.
+    """
+    for cut in range(len(ipv6_frame) + 1):
+        try:
+            parse_both(ipv6_frame[:cut])
+        except Exception as exc:                          # pragma: no cover
+            pytest.fail(f"IPv6 truncated to {cut} bytes: "
+                        f"{type(exc).__name__}: {exc}")
+
+
+def test_ipv6_next_header_fuzz(ipv6_frame):
+    """Every possible next-header value must terminate the chain walk."""
+    raw = bytearray(ipv6_frame)
+    for value in range(256):
+        raw[20] = value                # IPv6 next header field
+        parse_both(bytes(raw))
+
+
+def test_lst2int_refuses_oversized_input():
+    """
+    It used to return 0 for anything over 8 bytes -- a plausible offset and
+    a plausible length. A 16-byte IPv6 address hits exactly that path.
+    """
+    from cryptomon.utils import lst2int
+    with pytest.raises(ValueError):
+        lst2int(bytes(16))
+    assert lst2int(b"\x01\x02") == 258

@@ -48,9 +48,16 @@ def test_fixtures_differ_only_in_framing():
     assert len(frame("ip_options")) == len(frame("plain_ipv4")) + 4
 
 
-@pytest.mark.parametrize("name", ["vlan", "qinq", "ip_options"])
+@pytest.mark.parametrize("name", ["vlan", "qinq", "ip_options",
+                                  "ipv6", "ipv6_extheader"])
 def test_extra_headers_do_not_shift_the_handshake(name):
-    """802.1Q, QinQ and IPv4 options all used to silently corrupt the parse."""
+    """
+    802.1Q, QinQ, IPv4 options and both IPv6 forms carry the same handshake.
+
+    All of them used to silently corrupt the parse, IPv6 most completely: the
+    40-byte header is twice IPv4's, so every offset landed inside the address
+    fields.
+    """
     assert suites(name) == suites("plain_ipv4"), (
         f"{name} framing produced different output from the identical "
         f"handshake without it")
@@ -65,7 +72,7 @@ def test_vlan_endpoints_are_read_from_the_right_offsets():
 
 
 # --------------------------------------------------------------- refusals
-@pytest.mark.parametrize("name", ["udp", "ipv6"])
+@pytest.mark.parametrize("name", ["udp", "ipv6_fragment"])
 def test_unreadable_framing_is_refused_not_guessed(name):
     """
     Returning {} drops the packet, which is what a caller already does with a
@@ -98,8 +105,40 @@ def test_vlan_stack_depth_is_bounded():
     assert decode_ipv4_tcp(bytes(raw)) is None
 
 
-@pytest.mark.xfail(reason="IPv6 is issue #19; decode_ipv4_tcp refuses it "
-                          "explicitly rather than misparsing it",
-                   strict=True)
-def test_ipv6_clienthello():
-    assert suites("ipv6") == suites("plain_ipv4")
+def test_ipv6_addresses_are_not_rendered_as_ipv4():
+    """
+    The address key names its family, and the value is formatted from the
+    raw bytes rather than from an integer.
+
+    decimal_to_human() picks the family by magnitude, so every IPv6 address
+    below ::ffff:ffff -- ::1 included -- came out as an IPv4 dotted quad.
+    """
+    parsed = CryptoMon.tls_parse_crypto(None, skb(frame("ipv6")))
+    assert parsed["eth"]["src"] == {"ipv6": "2001:db8::1", "port": 54321}
+    assert parsed["eth"]["dst"]["ipv6"] == "2001:db8::2"
+    assert "ipv4" not in parsed["eth"]["src"]
+
+
+def test_ipv4_records_keep_their_existing_shape():
+    """Existing documents and queries use eth.src.ipv4; that must not move."""
+    parsed = CryptoMon.tls_parse_crypto(None, skb(frame("plain_ipv4")))
+    assert parsed["eth"]["src"] == {"ipv4": "10.0.0.1", "port": 54321}
+    assert "ipv6" not in parsed["eth"]["src"]
+
+
+def test_ipv6_extension_chain_is_bounded():
+    """A frame claiming an endless chain of option headers must not loop."""
+    raw = bytearray(frame("ipv6_extheader"))
+    raw[20] = 60                      # next header = destination options
+    for pos in range(54, min(len(raw) - 2, 200), 8):
+        raw[pos] = 60                 # ...and every following one, too
+        raw[pos + 1] = 0
+    assert decode_ipv4_tcp(bytes(raw)) is None
+
+
+def test_ipv6_ports_come_from_the_right_offset():
+    """The 40-byte header is fixed, but the TCP header sits past any chain."""
+    plain = CryptoMon.tls_parse_crypto(None, skb(frame("ipv6")))
+    chained = CryptoMon.tls_parse_crypto(None, skb(frame("ipv6_extheader")))
+    assert plain["eth"]["dst"]["port"] == 443
+    assert chained["eth"]["dst"]["port"] == 443
