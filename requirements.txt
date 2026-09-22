@@ -15,4 +15,4 @@ scapy==2.5.0
 # what the environment happened to hold; 44.x is current and has the
 # not_valid_*_utc accessors and public_key_algorithm_oid that the CBOM
 # export needs.
-cryptography>=44.0.2
+cryptography>=44.0.2,<45
