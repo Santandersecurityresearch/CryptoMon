@@ -58,19 +58,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: install bcc and kernel headers
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-bpfcc \
-            "linux-headers-$(uname -r)" || \
-          sudo apt-get install -y -qq python3-bpfcc linux-headers-generic
+      - name: build the check environment
+        # In a container, not on the runner directly. bcc compiles against
+        # the kernel headers it is given, and Ubuntu's python3-bpfcc cannot
+        # parse the headers of the kernel a runner boots -- it fails inside
+        # include/linux/bpf.h, on struct bpf_wq and BPF_LOAD_ACQ, before
+        # reaching our program at all. Pinning the environment leaves the C
+        # as the only thing under test.
+        run: docker build -t cryptomon-bpf tests/tools/bpf-image
       - name: compile the program and run it past the verifier
         # The only part of this project that runs in the kernel, and the only
         # part the pytest suite cannot reach. A mistake here does not produce
         # a wrong answer -- it produces a service that will not start, which
         # is what issue #26 is.
-        run: sudo -E python3 tests/tools/check_bpf.py
+        run: |
+          docker run --rm --privileged -v "$PWD":/work -w /work \
+            cryptomon-bpf python3 tests/tools/check_bpf.py
       - name: attach it to loopback and replay the framing fixtures
         # Compiling is not behaving. This attaches the program for real and
         # checks which framings reach userspace.
-        run: sudo -E python3 tests/tools/check_bpf_behaviour.py
+        run: |
+          docker run --rm --privileged -v "$PWD":/work -w /work \
+            cryptomon-bpf python3 tests/tools/check_bpf_behaviour.py
