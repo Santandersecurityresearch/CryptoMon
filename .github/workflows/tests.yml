@@ -26,7 +26,7 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - name: byte-compile everything
-        run: python -m compileall -q cryptomon fapi api.py cryptomon.py
+        run: python -m compileall -q cryptomon pcapscan fapi api.py cryptomon.py
       - name: selected checks against the change
         # No capture fixtures, no tshark: importability without bcc, code
         # point and GREASE handling, storage dispatch and write accounting.
@@ -51,6 +51,30 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: parsers vs the tshark oracle, over committed captures
         run: pytest -q
+
+  oracle:
+    name: the tshark oracle has not drifted
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install tshark
+        # Non-interactive, because the package asks whether non-root users
+        # may capture and will otherwise wait for an answer nobody can give.
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tshark
+          tshark -v | head -1
+      - name: regenerate it and check nothing moved
+        # The committed oracle is what the suite is judged against, so it has
+        # to be what tshark actually says -- not what tshark said on
+        # somebody's laptop once. Code points are canonicalised to hex first:
+        # Wireshark 3.4 prints ciphersuites in decimal and 4.2 in hex, and
+        # without that this job would test Wireshark's release notes.
+        run: |
+          ./tests/tools/make_stream_oracle.sh
+          git diff --exit-code -- tests/oracle/streams \
+            || { echo "::error::the committed oracle no longer matches tshark"; exit 1; }
 
   bpf:
     name: eBPF compiles and verifies

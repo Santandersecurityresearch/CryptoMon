@@ -83,13 +83,58 @@ If you have installed `cryptomon` as a service, then you do not need to run the 
 
 ## PCAP Files
 
-To parse a pcap file `test.pcap`, simply run:
+```bash
+python3 -m pcapscan test.pcap
+```
+
+`pcapscan` reads the capture directly. It needs no root, no eBPF, no
+interface and no database, and it runs on any platform Python does.
+
+It also sees considerably more than the live monitor can. The eBPF path
+receives one packet at a time, so it can only read a handshake that starts at
+the beginning of a TCP payload and finishes inside the same packet. `pcapscan`
+reassembles the stream first, which means:
+
+* **Whole ClientHellos.** A modern hello with post-quantum key shares is
+  around 1.9KB and arrives in two segments; the live path reads the first one
+  and records whichever extensions happened to fit.
+* **Whole certificate chains**, including intermediates. A chain is several
+  kilobytes and has never once fitted in a single packet.
+* **Both halves of a HelloRetryRequest**, so a post-quantum key exchange that
+  the *server refused* is reported as refused rather than as offered.
+
+Measured against `tshark` over the project's capture corpus, the two agree
+exactly on 441 ClientHellos and 93 certificate messages.
+
+### Output formats
+
+```bash
+python3 -m pcapscan capture.pcap                      # readable report
+python3 -m pcapscan capture.pcap -f csv -o out.csv    # for a spreadsheet
+python3 -m pcapscan *.pcapng -f ndjson | mongoimport --collection cryptomon
+zcat big.pcap.gz | python3 -m pcapscan - -f json      # from a pipe
+```
+
+pcap and pcapng are both read, gzipped or not, and several captures can be
+given at once and analysed as one body of traffic. The NDJSON records use the
+same document shape the live monitor writes, so they load into the same
+collection without translation.
+
+`--no-certificates` skips X.509 parsing; `--stats` writes the reader and
+reassembler counters to stderr; `--max-stream-bytes` raises the per-direction
+reassembly buffer for captures with unusually large certificate chains.
+
+### Replaying over loopback
 
 ```bash
 ./parse-pcap.sh test.pcap
 ```
 
-So long as your data environment variables are all set, then this will parse the PCAP data and replay it over the loopback `lo` interface, allowing cryptomon to parse it.
+This replays the capture over the loopback interface for the live eBPF
+monitor to parse, which exercises the same path production uses. It needs
+root and the data environment variables set, and it sees only what a
+single-packet reader can see -- prefer `pcapscan` unless you are specifically
+testing the live path.
 
 ## FastAPI 
 

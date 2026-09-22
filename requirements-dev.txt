@@ -4,3 +4,8 @@
 -r requirements.txt
 
 pytest==9.0.3
+
+# Validates the generated CBOM against the vendored CycloneDX 1.6 schema.
+# Test-only: nothing in cryptomon/ or pcapscan/ imports it, and the CBOM
+# tests skip cleanly when it is absent.
+jsonschema==4.23.0

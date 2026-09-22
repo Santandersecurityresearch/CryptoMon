@@ -8,3 +8,11 @@ tinydb==4.8.0
 uvicorn==0.30.0
 psutil==6.0.0
 scapy==2.5.0
+
+# Certificate parsing for the offline pipeline (pcapscan.certificates).
+# Optional at runtime -- pcapscan.sessions carries the raw DER when it is
+# absent -- but pinned here so CI and a default install have it. 39.0.1 was
+# what the environment happened to hold; 44.x is current and has the
+# not_valid_*_utc accessors and public_key_algorithm_oid that the CBOM
+# export needs.
+cryptography>=44.0.2,<45
