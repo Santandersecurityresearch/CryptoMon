@@ -51,3 +51,26 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: parsers vs the tshark oracle, over committed captures
         run: pytest -q
+
+  bpf:
+    name: eBPF compiles and verifies
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install bcc and kernel headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-bpfcc \
+            "linux-headers-$(uname -r)" || \
+          sudo apt-get install -y -qq python3-bpfcc linux-headers-generic
+      - name: compile the program and run it past the verifier
+        # The only part of this project that runs in the kernel, and the only
+        # part the pytest suite cannot reach. A mistake here does not produce
+        # a wrong answer -- it produces a service that will not start, which
+        # is what issue #26 is.
+        run: sudo -E python3 tests/tools/check_bpf.py
+      - name: attach it to loopback and replay the framing fixtures
+        # Compiling is not behaving. This attaches the program for real and
+        # checks which framings reach userspace.
+        run: sudo -E python3 tests/tools/check_bpf_behaviour.py
