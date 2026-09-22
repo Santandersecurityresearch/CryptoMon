@@ -3,4 +3,4 @@
 # ubuntu-setup.sh) and are NOT required to run the test suite.
 -r requirements.txt
 
-pytest==8.3.2
+pytest==9.0.3
