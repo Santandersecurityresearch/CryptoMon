@@ -36,12 +36,14 @@ import collections
 from cryptomon.data import SSH_SECTIONS, TLS_GROUPS_DICT
 from cryptomon.parsers.framing import decode_frame
 from cryptomon.parsers.tls import parse_hello_message
+from cryptomon.ssh_enrichment import describe_ssh_session
 from cryptomon.utils import describe_codepoint, lst2int, printable_text
 from pcapscan.reader import Reader
 from pcapscan.reassembly import Reassembler
+from pcapscan.protocols import DEFAULT_HEAD_BYTES, LIKELY, detect
 from pcapscan.records import (HS_CERTIFICATE, HS_CLIENT_HELLO,
                               HS_SERVER_HELLO, HS_SERVER_KEY_EXCHANGE,
-                              HandshakeStream, looks_like_tls)
+                              HandshakeStream)
 
 EXT_PRE_SHARED_KEY = 41
 EXT_SESSION_TICKET = 35
@@ -220,6 +222,18 @@ class Session:
         state, evidence = self.resumption()
         tls = {
             'hostname': proposed.get('hostname'),
+            # Sits directly under `hostname` on purpose: when a server
+            # accepts ECH the name above is the public outer one, not the
+            # destination. 36.9% of corpus clients already offer it. A
+            # hostname that quietly stops being the hostname is the same
+            # class of defect as the truncated ClientHellos -- unlabelled
+            # missing data -- so the qualifier travels with the value.
+            'ech': proposed.get('ech'),
+            # The client and server fingerprints, lifted out of proposed/
+            # selected so that a consumer does not have to know which half
+            # of the handshake produced them.
+            'ja4': proposed.get('ja4'),
+            'ja4s': selected.get('ja4s'),
             'ciphersuite': selected.get('ciphersuite'),
             'kex_group': self.key_exchange_group(),
             'tls_versions': selected.get('tls_versions')
@@ -237,8 +251,10 @@ class Session:
             tls['offered_kex_group'] = self.client_hellos[0].get('kex_group')
             tls['retry_kex_group'] = self.client_hellos[-1].get('kex_group')
         if self.alerts:
-            tls['alerts'] = [{'level': a.level, 'description': a.description}
-                             for a in self.alerts]
+            tls['alerts'] = [{'level': alert.level,
+                              'description': alert.description,
+                              'from_client': from_client}
+                             for from_client, alert in self.alerts]
         if self.certificate_messages:
             parser = certificate_parser or _certificate_parser()
             if parser is None:
@@ -356,13 +372,27 @@ class SessionBuilder:
         stream, key = update.stream, update.key
         if not stream.data:
             return
-        head = bytes(stream.data[:8])
         if 'kind' not in stream.state:
-            stream.state['kind'] = self._classify(head)
-            if stream.state['kind'] is None:
+            head = bytes(stream.data[:DEFAULT_HEAD_BYTES])
+            kind = self._classify(head, key.dport)
+            if kind is None:
+                # Undecided is not the same as "not ours". The three-byte
+                # sniff this replaces could always answer from the first
+                # segment; a detector that checks a declared length against
+                # the bytes present cannot, and abandoning on a one-byte
+                # first segment would drop real TLS flows.
+                if len(head) < DEFAULT_HEAD_BYTES and not stream.full:
+                    return
                 self.reassembler.abandon(key)
                 self.stats['flows_not_tls_or_ssh'] += 1
                 return
+            stream.state['kind'] = kind
+            # Waiting for enough bytes to classify means some have already
+            # arrived, and the record walker is fed `new_bytes` -- so hand it
+            # everything held rather than only this segment's share, or the
+            # start of the handshake is lost exactly when the flow was
+            # slowest to identify.
+            stream.state['pending_head'] = bytes(stream.data)
         kind = stream.state['kind']
         # The client is whoever sent the first byte of this connection; when
         # only one direction was captured, the lower-numbered well-known port
@@ -386,27 +416,56 @@ class SessionBuilder:
             session.protocol = 'ssh'
             if stream.state.get('ssh_done'):
                 return
-            parsed = parse_ssh_stream(bytes(stream.data))
+            blob = bytes(stream.data)
+            parsed = parse_ssh_stream(blob)
             if parsed:
                 side = 'client' if from_client else 'server'
                 session.banners[side] = parsed.pop('banner', None)
                 for name, value in parsed.items():
                     session.ssh.setdefault(name, value)
-                # The KEXINIT is the first packet after the banner; once its
-                # lists are in, re-reading the stream can only find the same
-                # thing again.
-                stream.state['ssh_done'] = bool(parsed)
+                # The host key type and size are the point of reading SSH at
+                # all -- "RSA" says nothing about quantum exposure and
+                # "RSA-2048" says everything -- and only the server sends
+                # one, in a KEX reply that follows the KEXINIT and is
+                # normally in a later segment.
+                #
+                # This is why the gate below is no longer `bool(parsed)`.
+                # The old comment here said re-reading the stream "can only
+                # find the same thing again", which was true while the
+                # KEXINIT lists were all anyone wanted and became false the
+                # moment they were not. The server side is not finished
+                # until a host key parses.
+                enriched = describe_ssh_session(
+                    session.banners[side], parsed,
+                    None if from_client else blob)
+                for name, value in enriched.items():
+                    # Skipping empty values matters: describe_ssh_session
+                    # always returns its full key set, so a plain setdefault
+                    # from the client side would pin host_key_* to None and
+                    # the server's real values could never land.
+                    if value not in (None, '', {}, [], False):
+                        session.ssh[name] = session.ssh.get(name) or value
+                stream.state['ssh_done'] = bool(
+                    from_client or enriched.get('host_key_size'))
             return
 
         if 'hs' not in stream.state:
             stream.state['hs'] = HandshakeStream()
         walker = stream.state['hs']
-        for message in walker.feed(update.new_bytes):
+        held = stream.state.pop('pending_head', None)
+        for message in walker.feed(update.new_bytes if held is None else held):
             session.add_message(from_client, message)
         # Alerts accumulate on the walker; take the ones not yet copied
         # across. Both directions send them, and both belong to the session.
         seen = stream.state.get('alerts_taken', 0)
-        session.alerts.extend(walker.alerts[seen:])
+        # Which side sent it, kept rather than dropped. Without it the
+        # record cannot distinguish "a middlebox refused our key share" from
+        # "we refused their parameters" -- and that ambiguity is what makes
+        # a handshake_failure correlated with a post-quantum offer a lead
+        # rather than a finding. `from_client` is already in scope here and
+        # was being discarded one line later.
+        session.alerts.extend((from_client, alert)
+                              for alert in walker.alerts[seen:])
         stream.state['alerts_taken'] = len(walker.alerts)
         if walker.encrypted:
             session.encrypted_after_hello = True
@@ -415,11 +474,27 @@ class SessionBuilder:
             if walker.malformed:
                 self.stats['streams_malformed'] += 1
 
-    def _classify(self, head):
-        if head.startswith(SSH_BANNER):
-            return 'ssh'
-        if looks_like_tls(head):
-            return 'tls'
+    def _classify(self, head, server_port=None):
+        """
+        What this stream carries, decided from its bytes.
+
+        The three-byte sniff this replaces could not tell TLS from anything
+        else whose first byte happened to land in 20-23, and filed HTTP,
+        LDAP, SMB2 and DCE/RPC together as "not TLS or SSH". `detect` names
+        them, so the counter below records what the traffic *was* rather
+        than only what it was not.
+
+        The port is passed but never decides: `detect` uses it to break a
+        `220 ` greeting tie between SMTP and FTP and to mark a port the
+        kernel filter does not watch. Letting it select a protocol would
+        rebuild the assumption this module exists to remove.
+        """
+        found = detect(head, server_port)
+        if found is None or found.confidence < LIKELY:
+            return None
+        if found.protocol in ('tls', 'ssh'):
+            return found.protocol
+        self.stats['flows_' + found.protocol] += 1
         return None
 
     def _orient(self, key):

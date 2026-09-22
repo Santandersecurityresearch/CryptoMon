@@ -84,6 +84,17 @@
 {% endif %}
 {% endif %}
 
+{% if readiness.ech_offered %}
+<h2>Encrypted ClientHello</h2>
+<p class="note">
+  {{ readiness.ech_offered }} session(s) offered ECH and
+  {{ readiness.ech_accepted }} had it accepted. While a server declines it,
+  the hostnames above are the real destinations. Where it is accepted the
+  name is the public outer one — the true destination is encrypted and
+  cannot be read from a capture.
+</p>
+{% endif %}
+
 <h2>TLS versions</h2>
 <table>
   <tr><th>Version</th><th class="n">Sessions</th></tr>

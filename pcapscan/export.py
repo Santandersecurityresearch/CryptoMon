@@ -39,6 +39,7 @@ import csv
 import datetime
 import json
 
+from cryptomon.alerts import describe as describe_alert
 from cryptomon.analysis import classify_key_exchange
 
 # One row per session. Ordered so that the identifying columns come first and
@@ -47,7 +48,7 @@ from cryptomon.analysis import classify_key_exchange
 CSV_COLUMNS = [
     'ts', 'time', 'duration',
     'src', 'src_port', 'dst', 'dst_port',
-    'protocol', 'hostname',
+    'protocol', 'hostname', 'ech', 'ja4', 'ja4s',
     'tls_version', 'ciphersuite', 'kex_group', 'kex_verdict',
     'resumption', 'hello_retry_request',
     'offered_kex_group', 'retry_kex_group',
@@ -133,6 +134,24 @@ def _readable_time(timestamp):
         return None
 
 
+def _alert_label(alert):
+    """
+    One alert as a readable cell: `fatal handshake_failure (server)`.
+
+    Named rather than numbered. "2/40" in a spreadsheet is a lookup somebody
+    has to do by hand, and the direction is the part that carries the
+    finding -- it separates a server refusing our key share from us refusing
+    its parameters, which is precisely the ambiguity that makes a
+    post-quantum correlation a lead rather than a conclusion.
+    """
+    described = describe_alert(alert)
+    label = '{0} {1}'.format(described['level_name'], described['name'])
+    sender = alert.get('from_client')
+    if sender is None:
+        return label
+    return '{0} ({1})'.format(label, 'client' if sender else 'server')
+
+
 def _join(values):
     if not values:
         return ''
@@ -161,6 +180,11 @@ def flatten(record):
         'dst_port': dst.get('port'),
         'protocol': 'ssh' if ssh else 'tls',
         'hostname': tls.get('hostname'),
+        # Next to the hostname, because it is the qualifier on it: once a
+        # server accepts ECH the name to its left is the public outer one.
+        'ech': tls.get('ech'),
+        'ja4': tls.get('ja4'),
+        'ja4s': tls.get('ja4s'),
         'tls_version': _join(versions) if isinstance(versions, list)
                        else versions,
         'ciphersuite': tls.get('ciphersuite'),
@@ -185,8 +209,11 @@ def flatten(record):
             len(tls.get('certificates_der') or []) or None),
         'proposed_groups': _join(proposed.get('groups')),
         'proposed_ciphersuites': len(proposed.get('ciphersuites') or []) or None,
-        'alerts': _join('{0}/{1}'.format(a.get('level'), a.get('description'))
-                        for a in tls.get('alerts') or []),
+        # Named, not numbered. "2/40" in a spreadsheet column is a lookup
+        # somebody has to do by hand; "fatal handshake_failure (client)" is
+        # the finding. The direction matters most of all -- it separates a
+        # server refusing our key share from us refusing its parameters.
+        'alerts': _join(_alert_label(a) for a in tls.get('alerts') or []),
     }
     if ssh:
         row['ciphersuite'] = _join(ssh.get('EncryptionAlgosClient2Server'))
