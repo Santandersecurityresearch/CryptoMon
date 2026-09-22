@@ -42,6 +42,14 @@ path never sees them. Feeding them to the parser tests a path production never
 takes. `test_ebpf_gate_shortfall_is_recorded` measures that gap rather than
 assuming it.
 
+## Why `pythonpath = .` is in pytest.ini
+
+`python -m pytest` puts the working directory on `sys.path`; the `pytest`
+console script does not. Without that line the suite passes locally under
+`python -m pytest` and fails in CI with `ModuleNotFoundError: No module named
+'cryptomon'` — which is exactly how it first failed. Don't remove it unless
+the package gains a real install (`pip install -e .`).
+
 ## Regenerating
 
 Needs the corpus (`CryptomonData/`, `sandbox/`), which is gitignored. The
