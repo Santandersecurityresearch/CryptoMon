@@ -15,9 +15,6 @@ __status__ = "Demonstration"
 
 from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.parsers import parse_ssh, parse_tls
-from motor.motor_asyncio import AsyncIOMotorClient
-from fastapi import FastAPI
-from tinydb import TinyDB
 
 import collections
 import datetime as dt
@@ -31,6 +28,14 @@ import asyncio
 # imported lazily in CryptoMon.__init__ so that everything else in this
 # package -- in particular the packet parsers -- can be imported and tested on
 # a machine that has neither, which is what CI and non-Linux development need.
+#
+# motor, fastapi and tinydb are now lazy for the same reason, one layer up.
+# They are only ever used by a live CryptoMon instance, but importing them
+# here meant `import cryptomon.analysis` -- and therefore `python -m pcapscan`
+# and the sandbox worker -- pulled in fastapi, motor, pymongo, starlette and
+# tinydb: 564 modules and a quarter of a second to parse a file that needs
+# none of them. pcapscan's own docstring claims it imports no database
+# driver; until this moved, that was not true.
 
 # Per-run write counters, so that silent data loss becomes visible. Module
 # scope mirrors the parse counters and keeps them readable from anywhere.
@@ -44,11 +49,16 @@ IP4_HDR_LEN = 20
 
 
 class CryptoMon(object):
-    def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
+    def __init__(self, iface="enp0s1", fapiapp="",
                  mongodb=False, settings="",
                  bpf_code=bpf_ipv4_txt, pcap_file="",
                  data_tag="", load_method="library",
                  max_pending=DEFAULT_MAX_PENDING):
+        """
+        `fapiapp` is a FastAPI application or falsy. It used to be annotated
+        `FastAPI` while defaulting to `""`, which is not a FastAPI and was
+        the only reason this module imported fastapi at all.
+        """
         if not settings:
             raise Exception("No settings provided... Aborting.")
         self.data_tag = data_tag if data_tag else ""
@@ -112,10 +122,12 @@ class CryptoMon(object):
             self.fapi_app = fapiapp
             self.backend = 'fapi'
         elif mongodb:
+            from motor.motor_asyncio import AsyncIOMotorClient
             self.mongodb_client = AsyncIOMotorClient(settings.DB_URL)
             self.mongodb = self.mongodb_client[settings.DB_NAME]
             self.backend = 'mongodb'
         else:
+            from tinydb import TinyDB
             self.tinydb = TinyDB("cryptomon.json")
             self.backend = 'tinydb'
         
