@@ -13,14 +13,19 @@ class IPModel(BaseModel):
 
 
 class EthModel(BaseModel):
-    src: dict = IPModel() 
-    dst: dict = IPModel()
+    # Annotated as IPModel, not dict: these default to IPModel instances, and
+    # a mutable default must come from a factory rather than one shared
+    # instance built at class-definition time.
+    src: IPModel = Field(default_factory=IPModel)
+    dst: IPModel = Field(default_factory=IPModel)
 
 
 class TLSDataModel(BaseModel):
-    id: str = Field(default_factory=uuid.uuid4, alias="_id")
+    # `str` with a uuid.uuid4 factory declared one type and produced another;
+    # stringify in the factory so the value matches the annotation.
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="_id")
     ptype: Optional[str] = Field(...)
-    eth: str = EthModel()  # packet type
+    eth: EthModel = Field(default_factory=EthModel)
     tls: Optional[dict] = Field(...)
 
     class Config:
@@ -41,9 +46,12 @@ class TLSDataModel(BaseModel):
 
 
 class UpdateTLSDataModel(BaseModel):
-    ptype: Optional[str] = Field(...)
-    eth: str = EthModel()  # packet type
-    tls: dict = Field(...)
+    # Every field is optional: update_task() builds its $set from whichever
+    # fields are not None, so requiring all of them made that filtering dead
+    # code and blocked partial updates outright.
+    ptype: Optional[str] = None
+    eth: Optional[EthModel] = None
+    tls: Optional[dict] = None
     
     class Config:
         schema_extra = {
