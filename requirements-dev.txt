@@ -1,0 +1,6 @@
+# Test and development dependencies. The runtime dependencies are in
+# requirements.txt; bcc and pyroute2 come from the distribution (see
+# ubuntu-setup.sh) and are NOT required to run the test suite.
+-r requirements.txt
+
+pytest==8.3.2

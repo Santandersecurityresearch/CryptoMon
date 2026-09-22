@@ -37,9 +37,11 @@ def is_grease(value):
     """
     try:
         high, low = value
+        return high == low and (high & 0x0f) == 0x0a
     except (TypeError, ValueError):
+        # Unpacking succeeds for any 2-element iterable, including a 2-char
+        # string, so the bitwise test has to be inside the guard too.
         return False
-    return high == low and (high & 0x0f) == 0x0a
 
 
 def describe_codepoint(table, value, stat=None):

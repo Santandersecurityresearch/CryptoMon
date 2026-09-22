@@ -1,0 +1,53 @@
+name: tests
+
+# The runners have no bcc, no pyroute2, no MongoDB and no root -- which is
+# exactly the acceptance criterion for this suite. If the package ever goes
+# back to importing bcc at module scope, everything here stops collecting.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: merge gate (fast)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: byte-compile everything
+        run: python -m compileall -q cryptomon fapi api.py cryptomon.py
+      - name: selected checks against the change
+        # No capture fixtures, no tshark: importability without bcc, code
+        # point and GREASE handling, storage dispatch and write accounting.
+        run: pytest -m smoke -q
+
+  full:
+    name: full suite
+    needs: smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor: the parsers use a match statement.
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: parsers vs the tshark oracle, over committed captures
+        run: pytest -q
