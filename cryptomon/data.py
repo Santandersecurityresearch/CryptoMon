@@ -1,5 +1,5 @@
 import csv
-import os
+from pathlib import Path
 
 TLS_DICT = {}
 
@@ -26,8 +26,17 @@ def get_tls_from_csv(csv_file):
     return csuite_dict
 
 
-cwd = os.getcwd() + '/'
-TLS_DICT = get_tls_from_csv(cwd+'cryptomon/tls_ciphersuites.csv')
+# The ciphersuite table ships alongside this module, so it is resolved relative
+# to the module rather than to the process working directory. The previous
+# os.getcwd() form only worked when the process happened to start in the repo
+# root: create-service.sh pins WorkingDirectory there, but nothing else does --
+# a hand-written unit file defaults to /, a container sets its own WORKDIR,
+# uvicorn may be started from anywhere, and pytest runs from wherever it is
+# invoked. (If this package is ever pip-installed, declare the CSV as package
+# data so that it is installed next to data.py.)
+CIPHERSUITES_CSV = Path(__file__).resolve().parent / 'tls_ciphersuites.csv'
+
+TLS_DICT = get_tls_from_csv(CIPHERSUITES_CSV)
 
 
 # TLSv1.3 Support Gropups (ext sec 10), see https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-8
