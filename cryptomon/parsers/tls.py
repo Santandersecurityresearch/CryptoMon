@@ -9,6 +9,7 @@ The byte arithmetic below was moved here verbatim from CryptoMon.tls_parse_crypt
 only the skb unwrapping and the header walk changed. The test suite is the proof.
 """
 from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT
+from cryptomon.fingerprints import ja3, ja4, ja4s
 from cryptomon.parsers.framing import decode_ipv4_tcp
 from cryptomon.utils import (PARSE_STATS, cert_guess, describe_codepoint,
                              describe_codepoints, get_tls_version, is_grease,
@@ -37,10 +38,33 @@ SERVER_HELLO = 2
 # unrecognised one still matters to whoever reads the output later.
 EXT_SERVER_NAME = 0
 EXT_SUPPORTED_GROUPS = 10
+EXT_EC_POINT_FORMATS = 11
 EXT_SIGNATURE_ALGORITHMS = 13
+EXT_ALPN = 16
 EXT_ENCRYPT_THEN_MAC = 22
+EXT_COMPRESS_CERTIFICATE = 27
+EXT_SESSION_TICKET = 35
+EXT_PRE_SHARED_KEY = 41
 EXT_SUPPORTED_VERSIONS = 43
+EXT_PSK_KEY_EXCHANGE_MODES = 45
+EXT_SIGNATURE_ALGORITHMS_CERT = 50
 EXT_KEY_SHARE = 51
+EXT_ENCRYPTED_CLIENT_HELLO = 65037
+
+# RFC 8446 section 4.2.9. psk_ke resumes with no fresh Diffie-Hellman at
+# all, so a session that used it performed no key exchange and inherits
+# whatever the original one was worth -- which is the difference between a
+# quantum-safe connection and one that only looks like it.
+PSK_MODES = {0: 'psk_ke', 1: 'psk_dhe_ke'}
+
+# RFC 8879. Named rather than numbered because a CBOM reader should not have
+# to look up "2".
+CERT_COMPRESSION_ALGS = {1: 'zlib', 2: 'brotli', 3: 'zstd'}
+
+# The first byte of an encrypted_client_hello body in a ClientHello
+# (draft-ietf-tls-esni section 5): which of the two hellos this is.
+ECH_OUTER = 0
+ECH_INNER = 1
 
 # Caps on packet-driven loops. A real hello carries on the order of ten
 # extensions and a few dozen list entries; these exist so that a crafted or
@@ -62,6 +86,151 @@ def _clamp_items(byte_length, limit, offset, item_size=2):
     claimed = byte_length // item_size
     available = max(0, (limit - offset)) // item_size
     return min(claimed, available, MAX_LIST_ITEMS)
+
+
+def _ext_body(ext_offset, ext_len, limit):
+    """
+    Where one extension's body begins and ends.
+
+    Both bounds are clamped: the declared length belongs to the peer, and
+    the walk that reads it must stop at the end of the message whatever the
+    peer claims. Every extension parsed below starts from this pair rather
+    than from an offset of its own, because the bug this file already
+    carries a comment about -- a walk running on into the message after it
+    -- is the same bug each time.
+    """
+    start = ext_offset + 4
+    return start, min(start + ext_len, limit)
+
+
+def _u16_items(buf, start, end):
+    """
+    A two-byte-length-prefixed vector of two-byte code points, as tuples.
+
+    signature_algorithms_cert has the same shape as signature_algorithms,
+    which is the point: one walk, not two that can drift apart.
+    """
+    if start + 2 > end:
+        PARSE_STATS['truncated_extension'] += 1
+        return []
+    count = _clamp_items(lst2int(buf[start:start + 2]), end, start + 2)
+    base = start + 2
+    return [tuple(buf[base + i:base + i + 2]) for i in range(0, count * 2, 2)]
+
+
+def _u8_items(buf, start, end):
+    """A one-byte-length-prefixed vector of single bytes."""
+    if start >= end:
+        PARSE_STATS['truncated_extension'] += 1
+        return []
+    count = min(buf[start], max(0, end - start - 1), MAX_LIST_ITEMS)
+    return list(buf[start + 1:start + 1 + count])
+
+
+def _named_values(table, values, stat, width=2):
+    """
+    Name a list of small integers, counting the ones the table lacks.
+
+    Unknown values keep their number, for the same reason
+    describe_codepoint() does: an unrecognised algorithm has to stay
+    identifiable afterwards, and collapsing it to 'unknown' loses the only
+    thing that could identify it.
+    """
+    out = []
+    for value in values:
+        if value in table:
+            out.append(table[value])
+            continue
+        PARSE_STATS[stat] += 1
+        out.append('Unknown (0x{0:0{1}x})'.format(value, width))
+    return out
+
+
+def _parse_alpn(buf, start, end):
+    """
+    The ALPN protocol names: a vector of one-byte-length-prefixed strings.
+
+    Returned as raw bytes. The record wants them as text and JA4 wants the
+    bytes, and those are different escapings -- printable_text() rewrites a
+    non-ASCII byte as '\\xNN', which would change the two characters the
+    fingerprint is built from.
+    """
+    if start + 2 > end:
+        PARSE_STATS['truncated_extension'] += 1
+        return []
+    offset = start + 2
+    stop = min(offset + lst2int(buf[start:start + 2]), end)
+    names = []
+    while offset < stop:
+        if len(names) >= MAX_LIST_ITEMS:
+            PARSE_STATS['alpn_cap_hit'] += 1
+            break
+        name_len = buf[offset]
+        offset += 1
+        if offset + name_len > stop:
+            # A declared name longer than the extension holding it. The
+            # names already read are still real, so they are kept.
+            PARSE_STATS['truncated_alpn'] += 1
+            break
+        names.append(bytes(buf[offset:offset + name_len]))
+        offset += name_len
+    return names
+
+
+def _parse_ech(buf, start, end, from_client):
+    """
+    What encrypted_client_hello says, and why it is worth a function.
+
+    ECH is offered by 465 of the 1260 sessions in the corpus (36.9%), and it
+    is the one extension here that can invalidate a field the rest of the
+    tool depends on. When a server accepts ECH the hello on the wire is the
+    *outer* one: its server_name is a public name the client was told to
+    use, and the real destination is inside the encrypted inner hello. So
+    tls['hostname'] stops being the host that was visited -- and the CBOM's
+    evidence.occurrences, the CSV's hostname column and the report page all
+    present it as if it were.
+
+    Hence the label, even where the label is 'offered' and nothing more.
+    Unlabelled missing data is worse than missing data: "www.example.com"
+    alone is a claim, while "www.example.com, ech=offered" is an observation
+    with its uncertainty attached.
+
+    What is observable, and what is not:
+
+      offered   the ClientHello carries the extension with the outer type
+                byte. This is what the corpus contains: 526 hellos, every
+                one of them type 0.
+      accepted  a ServerHello or HelloRetryRequest carries it back. Zero of
+                the 1170 ServerHellos here do, and absence is *not*
+                evidence of rejection: a server accepting ECH in a
+                ServerHello does not echo the extension at all -- the
+                acceptance signal is eight bytes of ServerHello.random
+                derived from the inner transcript, which a passive observer
+                cannot check without the inner hello it is derived from.
+      grease    not distinguishable, by design. A GREASE ECH is a
+                well-formed outer hello with a random config id and payload
+                (draft-ietf-tls-esni section 6.2), which is exactly what a
+                real one looks like from outside. In aggregate this corpus
+                is plainly GREASE -- all 465 offers carry a plausible
+                plaintext SNI, 150 distinct names, none of them a public
+                outer name -- but aggregate is not per-session, so no
+                session is labelled 'grease' rather than labelled wrongly.
+    """
+    if not from_client:
+        return 'accepted'
+    if start >= end:
+        PARSE_STATS['malformed_ech'] += 1
+        return 'malformed'
+    kind = buf[start]
+    if kind == ECH_OUTER:
+        return 'offered'
+    if kind == ECH_INNER:
+        # The inner hello is the encrypted one; seeing its type byte in
+        # plaintext means this is not the message it claims to be.
+        PARSE_STATS['ech_inner_in_the_clear'] += 1
+        return 'inner'
+    PARSE_STATS['malformed_ech'] += 1
+    return 'malformed'
 
 
 def parse_handshake(buf, hs_start, limit):
@@ -90,6 +259,12 @@ def parse_handshake(buf, hs_start, limit):
     supported_sigalgs = []
     supported_tls_versions = []
     extensions_seen = []
+    alpn_values = []
+    ec_point_formats = []
+    # Set in one branch each, read by the fingerprints at the end, which
+    # run for both.
+    ciphersuites = []
+    negotiated_suite = ()
 
     if hs_start + HANDSHAKE_HDR_LEN > limit:
         PARSE_STATS['truncated'] += 1
@@ -104,6 +279,10 @@ def parse_handshake(buf, hs_start, limit):
     sess_id_len = buf[hs_start + 38]
     data['tls'] = {}
     data['tls']['tls_versions'] = get_tls_version(buf[hs_start + 4: hs_start + 6])
+    # The same two bytes as a number, for the fingerprints at the end. A
+    # TLS 1.3 hello writes 0x0303 here whatever it actually supports, so
+    # this is the floor, not the answer.
+    legacy_version = lst2int(buf[hs_start + 4:hs_start + 6])
     offset = hs_start + HANDSHAKE_HDR_LEN + sess_id_len
     if offset > limit:
         PARSE_STATS['truncated'] += 1
@@ -142,6 +321,33 @@ def parse_handshake(buf, hs_start, limit):
                 data['tls']['tls_versions'] = [
                     get_tls_version(x) for x in supported_tls_versions
                     if not is_grease(x)]
+            if ext_type == EXT_ALPN:
+                # The protocol the server *chose*, from the list the client
+                # offered. One name, in the same vector-of-vectors shape.
+                start, end = _ext_body(ext_offset, ext_len, ext_section_len)
+                alpn_values = _parse_alpn(buf, start, end)
+                data['tls']['alpn'] = [
+                    printable_text(lst2str(name), 'nonprintable_alpn')
+                    for name in alpn_values]
+            if ext_type == EXT_PRE_SHARED_KEY:
+                # Which of the identities the client offered was accepted.
+                # Its presence is what pcapscan.sessions reads as "resumed";
+                # the index says *which* ticket, which is the difference
+                # between a client resuming its own session and one
+                # replaying somebody else's.
+                start, end = _ext_body(ext_offset, ext_len, ext_section_len)
+                if start + 2 <= end:
+                    data['tls']['psk_selected'] = lst2int(buf[start:start + 2])
+                else:
+                    PARSE_STATS['truncated_extension'] += 1
+            if ext_type == EXT_SESSION_TICKET:
+                start, end = _ext_body(ext_offset, ext_len, ext_section_len)
+                if ext_len > end - start:
+                    PARSE_STATS['truncated_session_ticket'] += 1
+                data['tls']['session_ticket_len'] = ext_len
+            if ext_type == EXT_ENCRYPTED_CLIENT_HELLO:
+                start, end = _ext_body(ext_offset, ext_len, ext_section_len)
+                data['tls']['ech'] = _parse_ech(buf, start, end, False)
             ext_offset += ext_len + 4
     if msg_type == CLIENT_HELLO:
         data['ptype'] = 'client'
@@ -243,6 +449,77 @@ def parse_handshake(buf, hs_start, limit):
                 if kex_group is not None:
                     data['tls']['kex_group'] = describe_codepoint(
                         TLS_GROUPS_DICT, kex_group, 'unknown_group')
+            if ext_type == EXT_ALPN:
+                # 609 of the 1260 sessions offer ALPN, 569 of those
+                # leading with h2. It is here because it is two characters
+                # of the JA4 fingerprint and half of what identifies a
+                # proxy, not because it says anything about crypto.
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                alpn_values = _parse_alpn(buf, start, end)
+                data['tls']['alpn'] = [
+                    printable_text(lst2str(name), 'nonprintable_alpn')
+                    for name in alpn_values]
+            if ext_type == EXT_PRE_SHARED_KEY:
+                # Presence only. The identities and their binders are the
+                # rest of this extension, and neither is evidence of
+                # anything on its own: the client asking to resume is not
+                # the client resuming. The server's echo decides that, and
+                # pcapscan.sessions reads it from the ServerHello.
+                data['tls']['psk_offered'] = True
+            if ext_type == EXT_PSK_KEY_EXCHANGE_MODES:
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                data['tls']['psk_modes'] = _named_values(
+                    PSK_MODES, _u8_items(buf, start, end), 'unknown_psk_mode')
+            if ext_type == EXT_SESSION_TICKET:
+                # The length is the finding, not the ticket. An empty
+                # session_ticket asks for one; a non-empty one *is* a TLS
+                # 1.2 resumption attempt, and that is the difference
+                # between a handshake that performs a key exchange and one
+                # that inherits an old one. Measured: of the 935 client
+                # hellos carrying this extension, 911 send it empty and 24
+                # carry a real ticket.
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                if ext_len > end - start:
+                    # Declared rather than captured: what the peer says it
+                    # is holding is the claim worth recording, and a
+                    # truncated capture should not read as a shorter
+                    # ticket.
+                    PARSE_STATS['truncated_session_ticket'] += 1
+                data['tls']['session_ticket_len'] = ext_len
+            if ext_type == EXT_SIGNATURE_ALGORITHMS_CERT:
+                # What the client will accept on a *certificate*, as
+                # opposed to on the handshake signature. 212 hellos
+                # distinguish the two; where they differ, the certificate
+                # list is the one that constrains which CA can be used, so
+                # a post-quantum certificate inventory reads this one.
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                data['tls']['sigalgs_cert'] = parse_sigalgs(
+                    _u16_items(buf, start, end))
+            if ext_type == EXT_COMPRESS_CERTIFICATE:
+                # RFC 8879, and a post-quantum detail rather than a
+                # bandwidth one: ML-DSA certificates are an order of
+                # magnitude larger than ECDSA ones, so whether a client can
+                # accept a compressed chain bears on whether it can accept
+                # a post-quantum chain at all. 523 sessions offer it.
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                algs = []
+                if start < end:
+                    count = _clamp_items(buf[start], end, start + 1)
+                    algs = [lst2int(buf[start + 1 + i:start + 3 + i])
+                            for i in range(0, count * 2, 2)]
+                data['tls']['cert_compression'] = _named_values(
+                    CERT_COMPRESSION_ALGS, algs, 'unknown_cert_compression',
+                    width=4)
+            if ext_type == EXT_EC_POINT_FORMATS:
+                # Collected for the JA3 string and nothing else -- point
+                # formats are a 1990s compatibility knob and say nothing
+                # about the strength of anything -- so they stay out of the
+                # record and live only in the raw values below.
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                ec_point_formats = _u8_items(buf, start, end)
+            if ext_type == EXT_ENCRYPTED_CLIENT_HELLO:
+                start, end = _ext_body(ext_offset, ext_len, limit)
+                data['tls']['ech'] = _parse_ech(buf, start, end, True)
             ext_offset += ext_len + 4
         # Encrypt-then-MAC is a property of the hello, not of whichever
         # extension happened to be walked last. The old `if/else` inside the
@@ -257,7 +534,46 @@ def parse_handshake(buf, hs_start, limit):
     # tell a resumption from a fresh key exchange, and nothing else in the
     # output records it.
     data['tls']['extensions'] = extensions_seen
+    _add_fingerprints(data['tls'], msg_type, {
+        'legacy_version': legacy_version,
+        'versions': [lst2int(v) for v in supported_tls_versions
+                     if len(v) == 2],
+        'extensions': extensions_seen,
+        'alpn': alpn_values,
+        'ciphers': [lst2int(c) for c in ciphersuites],
+        'sigalgs': [lst2int(s) for s in supported_sigalgs],
+        'groups': [lst2int(g) for g in supported_groups],
+        'ec_point_formats': ec_point_formats,
+        'cipher': (lst2int(negotiated_suite)
+                   if len(negotiated_suite) == 2 else None),
+    })
     return data
+
+
+def _add_fingerprints(tls, msg_type, raw):
+    """
+    Attach JA4/JA4S (and JA3) while the raw code points are still in scope.
+
+    This is the last point at which they are. The alternative -- keeping
+    them on the record for a fingerprinter downstream to use -- would widen
+    every session record the tool stores: pcapscan.sessions copies this
+    whole dict into `proposed` and `selected`, so four lists of integers
+    nobody reads would reach MongoDB, the CSV and the CBOM in order to
+    produce one 36-character string. The string is the part worth keeping.
+
+    Absent rather than None when a fingerprint cannot be computed, because
+    a null in a record is read as "this client has no JA4", which is not a
+    thing a client can be.
+    """
+    if msg_type == CLIENT_HELLO:
+        computed = {'ja4': ja4(tls, raw), 'ja3': ja3(tls, raw)}
+    else:
+        computed = {'ja4s': ja4s(tls, raw)}
+    for name, value in computed.items():
+        if value is None:
+            PARSE_STATS['no_' + name] += 1
+            continue
+        tls[name] = value
 
 
 def parse_hello_message(msg_type, body):

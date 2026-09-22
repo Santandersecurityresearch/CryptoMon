@@ -1,4 +1,36 @@
-bpf_text = """
+"""
+The socket filter, generated rather than hard-coded.
+
+The C below is the program the live monitor loads, byte for byte what it
+was, with one exception: the two port comparisons are filled in from
+cryptomon/ports.py. Changing which ports were watched used to mean editing C
+inside a string literal and hoping it still compiled, which is the live half
+of issue #13.
+
+`bpf_text` and its old alias `bpf_ipv4_txt` stay what they have always been,
+module-level strings built at import, because CryptoMon.__init__ takes
+bpf_ipv4_txt as a *default argument* and anything pinned to an earlier
+release imports it by name.
+
+That means a malformed TLS_PORTS or SSH_PORTS raises here, at import, and
+`import cryptomon` is on the path of the offline tools too, so the refusal
+stops more than the live monitor. That is the deliberate choice: the
+alternative is to fall back to the defaults and carry on, and a monitor
+watching ports its operator did not choose reports no handshakes -- which is
+indistinguishable from a quiet network.
+"""
+from cryptomon.ports import render_port_check, ssh_ports, tls_ports
+
+# Markers, each alone on its line, replaced by a generated `if (...)`
+# condition. Markers and str.replace() rather than str.format() or
+# %-formatting because the C is most of a page of braces and percent signs
+# would have to be escaped: a template language whose metacharacters collide
+# with the language being templated is a bug waiting for whoever next edits
+# the program.
+TLS_PORT_CHECK = '__TLS_PORT_CHECK__'
+SSH_PORT_CHECK = '__SSH_PORT_CHECK__'
+
+PROGRAM = """
 #include <uapi/linux/ptrace.h>
 #include <net/sock.h>
 #include <bcc/proto.h>
@@ -107,12 +139,10 @@ int crypto_monitor(struct __sk_buff *skb)
     u32 tcp_header_length = (load_byte(skb, th_off + 12) >> 4) << 2;
     u32 payload_offset = th_off + tcp_header_length;
 
-    // here's where we filter for the ports we are interested in
-    if (dport == 443   || sport == 443   || // port 443  for TLS
-        dport == 990   || sport == 990   || // port 990 for FTPS
-        dport == 3389  || sport == 3389  || // port 3389 (RDP TLS)
-        dport == 8080  || sport == 8080  || // port 8080 for TLS
-        dport == 8443  || sport == 8443)    // port 8443 for TLS
+    // here's where we filter for the ports we are interested in. The list
+    // comes from cryptomon/ports.py, so that watching another port is an
+    // environment variable rather than an edit to this program.
+__TLS_PORT_CHECK__
     {
         // we are only interested in packets that are
         // client- or server-side TLS HELLO packets
@@ -131,7 +161,7 @@ int crypto_monitor(struct __sk_buff *skb)
         return -1;
     }
 
-    if (dport == 22 || sport == 22)
+__SSH_PORT_CHECK__
     {
         // client- or server-side SSH KEX Init packets
         unsigned short kex_init_check = load_byte(skb, payload_offset+5);
@@ -146,6 +176,28 @@ int crypto_monitor(struct __sk_buff *skb)
     }
     return TC_ACT_OK;
 }"""
+
+
+def build_program(tls=None, ssh=None):
+    """
+    The C, with the port comparisons filled in.
+
+    `tls` and `ssh` are iterables of port numbers; each defaults to
+    cryptomon.ports, which reads TLS_PORTS / SSH_PORTS and falls back to the
+    documented defaults. Separate from the module-level `bpf_text` so that a
+    caller -- a test, or a future --tls-ports flag -- can build a program for
+    a port list without changing the process environment.
+    """
+    if tls is None:
+        tls = tls_ports()
+    if ssh is None:
+        ssh = ssh_ports()
+    return (PROGRAM
+            .replace(TLS_PORT_CHECK, render_port_check(tls))
+            .replace(SSH_PORT_CHECK, render_port_check(ssh)))
+
+
+bpf_text = build_program()
 
 # The program handles IPv4 and IPv6; the old name is kept so that anything
 # importing it, including a pinned release, keeps working.

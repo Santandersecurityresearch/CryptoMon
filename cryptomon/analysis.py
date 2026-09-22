@@ -238,6 +238,11 @@ class Summary:
         self.hosts = collections.Counter()
         self.downgrades = []
         self.certificates_unreadable = 0
+        # Encrypted ClientHello, counted because it is the qualifier on
+        # every hostname this tool reports. While servers decline it the
+        # hostname is the real one; once they accept, it is the public outer
+        # name and the report must say so rather than quietly change meaning.
+        self.ech = collections.Counter()
         self.algorithms = {}
         self.ssh_kex = collections.Counter()
         # Distinct certificates, by fingerprint. A CBOM needs each one as its
@@ -305,6 +310,9 @@ class Summary:
         if group:
             self._note(group, 'key-exchange', verdict, record)
 
+        if tls.get('ech'):
+            self.ech[tls['ech']] += 1
+
         state = tls.get('resumption') or 'unknown'
         self.resumption[state] += 1
         if tls.get('hostname'):
@@ -350,6 +358,8 @@ class Summary:
         self.protocols['ssh'] += 1
         ssh = record.get('ssh') or {}
         for algorithm in ssh.get('KEXalgs') or []:
+            if algorithm in SSH_SIGNALLING_NAMES:
+                continue
             self.ssh_kex[algorithm] += 1
             self._note(algorithm, 'key-exchange',
                        classify_algorithm(algorithm), record)
@@ -401,6 +411,8 @@ class Summary:
             'certificates_post_quantum':
                 self.certificate_verdict[POST_QUANTUM],
             'certificates_unreadable': self.certificates_unreadable,
+            'ech_offered': self.ech.get('offered', 0),
+            'ech_accepted': self.ech.get('accepted', 0),
             'deprecated_tls_versions': sum(
                 self.tls_versions[v] for v in DEPRECATED_TLS_VERSIONS),
             'broken_symmetric_ciphers': weak_symmetric,
@@ -419,6 +431,7 @@ class Summary:
             'certificate_keys': dict(self.certificate_keys.most_common()),
             'certificate_verdict': dict(self.certificate_verdict),
             'resumption': dict(self.resumption),
+            'ech': dict(self.ech.most_common()),
             'ssh_key_exchange': dict(self.ssh_kex.most_common()),
             'top_hosts': dict(self.hosts.most_common(TOP_HOSTS)),
             'downgrades': self.downgrades,
@@ -451,6 +464,17 @@ def _protocol_label(record):
 # Deprecated by RFC 8996. Counted separately because "still negotiating TLS
 # 1.0" is an immediate finding, not a quantum one.
 DEPRECATED_TLS_VERSIONS = ('TLSv1.0', 'TLSv1.1')
+
+# Names that appear in an SSH KEXINIT's algorithm list but are not
+# algorithms: they signal a capability. `classify_algorithm` rightly answers
+# `unknown` for them, since they name no primitive -- but counting them would
+# put two or three entries in the unknown bucket on every single SSH session,
+# which would read as a gap in the classification table rather than as what
+# it is.
+SSH_SIGNALLING_NAMES = frozenset((
+    'ext-info-c', 'ext-info-s',
+    'kex-strict-c-v00@openssh.com', 'kex-strict-s-v00@openssh.com',
+))
 
 
 def analyse(records):

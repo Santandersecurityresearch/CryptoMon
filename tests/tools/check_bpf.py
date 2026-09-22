@@ -16,6 +16,14 @@ rather than in pytest:
 bpf.py is loaded straight from its path rather than imported as
 cryptomon.bpf, so this needs none of the runtime dependencies -- the point is
 to test the C, not the package.
+
+That is still true, with one qualification since PR-35 made the watched
+ports configurable: bpf.py now imports cryptomon.ports to build the port
+comparisons, so the repository root has to be importable even though the
+package as a whole is not imported. cryptomon.ports is pure standard library
+and pulls in nothing else, so the isolation this file wants is preserved --
+but the sys.path entry below is load-bearing, and without it this check dies
+with ModuleNotFoundError before it ever reaches the compiler.
 """
 import glob
 import importlib.util
@@ -25,7 +33,14 @@ import platform
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
-BPF_SOURCE = HERE.parent.parent / "cryptomon" / "bpf.py"
+REPO_ROOT = HERE.parent.parent
+BPF_SOURCE = REPO_ROOT / "cryptomon" / "bpf.py"
+
+# So that bpf.py's `from cryptomon.ports import ...` resolves. See the note
+# in the module docstring about why this does not reintroduce the runtime
+# dependencies.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def load_program_text():

@@ -13,7 +13,6 @@ __maintainer__ = "Mark Carney"
 __email__ = "mark.carney@gruposantander.com"
 __status__ = "Demonstration"
 
-from cryptomon.bpf import bpf_ipv4_txt
 from cryptomon.parsers import parse_ssh, parse_tls
 
 import collections
@@ -28,6 +27,13 @@ import asyncio
 # imported lazily in CryptoMon.__init__ so that everything else in this
 # package -- in particular the packet parsers -- can be imported and tested on
 # a machine that has neither, which is what CI and non-Linux development need.
+#
+# cryptomon.bpf joined them once PR-35 made the watched ports configurable:
+# it now reads TLS_PORTS/SSH_PORTS at import, so a typo in one of those
+# variables raised out of `import cryptomon` -- and therefore out of
+# `python -m pcapscan`, an offline tool with no eBPF program and no ports to
+# watch. Refusing loudly is right for the monitor and wrong for everything
+# else, so the import moved to where the program is actually compiled.
 #
 # motor, fastapi and tinydb are now lazy for the same reason, one layer up.
 # They are only ever used by a live CryptoMon instance, but importing them
@@ -51,16 +57,24 @@ IP4_HDR_LEN = 20
 class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp="",
                  mongodb=False, settings="",
-                 bpf_code=bpf_ipv4_txt, pcap_file="",
+                 bpf_code=None, pcap_file="",
                  data_tag="", load_method="library",
                  max_pending=DEFAULT_MAX_PENDING):
         """
         `fapiapp` is a FastAPI application or falsy. It used to be annotated
         `FastAPI` while defaulting to `""`, which is not a FastAPI and was
         the only reason this module imported fastapi at all.
+
+        `bpf_code` defaults to None rather than to the compiled program, so
+        that building it -- and reading the port configuration it depends on
+        -- happens when a monitor is started rather than when anything at all
+        imports this package.
         """
         if not settings:
             raise Exception("No settings provided... Aborting.")
+        if bpf_code is None:
+            from cryptomon.bpf import bpf_ipv4_txt
+            bpf_code = bpf_ipv4_txt
         self.data_tag = data_tag if data_tag else ""
         try:
             from bcc import BPF
