@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}CryptoMon{% endblock %}</title>
+<style>
+/* No build step, no CDN, no vendored framework. PR-37 will want charts and
+   can vendor uPlot then; a page with a form and a table does not need one,
+   and a dependency added here is a dependency the whole service carries. */
+:root {
+  --fg: #1a1a1a; --bg: #fcfcfa; --muted: #63635e; --line: #d9d9d4;
+  --accent: #7a3e12; --bad: #8a2a1f; --ok: #1f5c34;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e8e6e1; --bg: #1c1c1a; --muted: #a3a29c; --line: #3a3a37;
+          --accent: #d9915c; --bad: #e08272; --ok: #7fbf95; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+       font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+main { max-width: 56rem; margin: 0 auto; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.05rem; margin: 2rem 0 .5rem; font-weight: 600; }
+.sub { color: var(--muted); margin: 0 0 2rem; }
+table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: .82rem;
+     text-transform: uppercase; letter-spacing: .04em; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.verdict-classical, .bad { color: var(--bad); }
+.verdict-hybrid, .verdict-post-quantum, .ok { color: var(--ok); }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.2rem;
+        margin-bottom: 1rem; }
+.headline { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+.headline div { min-width: 8rem; }
+.headline .v { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.headline .k { color: var(--muted); font-size: .82rem; }
+label { display: block; margin: 1rem 0 .3rem; font-weight: 600; }
+input[type=file] { width: 100%; }
+button { margin-top: 1.2rem; padding: .55rem 1.1rem; font: inherit;
+         background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+         cursor: pointer; }
+a { color: var(--accent); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size: .88em; }
+.note { color: var(--muted); font-size: .88rem; }
+</style>
+</head>
+<body>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

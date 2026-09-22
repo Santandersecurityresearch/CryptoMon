@@ -16,3 +16,9 @@ scapy==2.5.0
 # not_valid_*_utc accessors and public_key_algorithm_oid that the CBOM
 # export needs.
 cryptography>=44.0.2,<45
+
+# The capture upload UI (fapi/app/uploads.py). Both arrive transitively with
+# fastapi today, which is exactly why they are pinned here: a transitive
+# dependency is one somebody else's release notes can remove.
+jinja2==3.1.6
+python-multipart==0.0.20

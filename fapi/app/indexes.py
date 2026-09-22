@@ -32,7 +32,7 @@ CRYPTOMON_INDEXES = [
 ]
 
 
-async def ensure_indexes(collection):
+async def ensure_indexes(collection, retention_hours=0):
     """
     Create any missing indexes. Idempotent, and never fatal.
 
@@ -42,9 +42,20 @@ async def ensure_indexes(collection):
     and a monitoring API that refuses to start because it could not optimise
     itself is worse than a slow one. Failures are reported and startup
     continues.
+
+    `retention_hours` adds a TTL index. It is separate from the list above
+    because it deletes data rather than speeding up a query, and an index
+    that deletes things belongs to an explicit setting -- see
+    fapi/app/retention.py.
     """
+    from fapi.app.retention import ttl_index
+
+    indexes = list(CRYPTOMON_INDEXES)
+    expiry = ttl_index(retention_hours)
+    if expiry is not None:
+        indexes.append(expiry)
     try:
-        return await collection.create_indexes(CRYPTOMON_INDEXES)
+        return await collection.create_indexes(indexes)
     except Exception as exc:
         print(f"[!] could not create indexes ({type(exc).__name__}: {exc}); "
               f"the API will run but filtered queries will scan.")
