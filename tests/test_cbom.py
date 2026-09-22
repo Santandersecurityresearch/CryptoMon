@@ -16,7 +16,6 @@ import datetime
 import io
 import json
 import pathlib
-from urllib.parse import urlparse
 
 import pytest
 
@@ -70,6 +69,41 @@ def validator():
     return jsonschema.Draft7Validator(root, registry=registry)
 
 
+def common_name(distinguished_name):
+    """
+    The CN attribute of an RFC 4514 distinguished name, or None.
+
+    A certificate's `name` in the BOM is its whole subject --
+    `CN=sha384.badssl.com,O=Lucas Garron Torres,L=Walnut Creek,...` -- which
+    is neither a URL nor a hostname. Matching it with a substring test, or
+    with urlparse(), is answering a question about the wrong kind of string:
+    the first is loose enough that CodeQL flags it as unsafe host checking
+    (py/incomplete-url-substring-sanitization, and it is right to), and the
+    second returns None because a DN has no scheme or authority. Pulling the
+    attribute out and comparing it exactly is both stricter than either and
+    actually correct.
+    """
+    for attribute in distinguished_name.split(','):
+        key, _, value = attribute.partition('=')
+        if key.strip() == 'CN':
+            return value.strip()
+    return None
+
+
+def host_and_port(location):
+    """
+    Split an `evidence.occurrences` location into (host, port).
+
+    These strings are ours -- cbom.py writes `'{host}:{port}'` -- so they are
+    split on the last colon rather than parsed as a URL. `urlparse` on a bare
+    `host:port` reads the host as a scheme and has to be coaxed back with a
+    leading `//`, which is a lot of machinery for a string we formatted
+    ourselves two modules away.
+    """
+    host, _, port = location.rpartition(':')
+    return host, port
+
+
 def refs(document):
     return {component['bom-ref'] for component in document['components']}
 
@@ -117,10 +151,10 @@ def test_a_protocol_component_carries_its_cipher_suites(document):
 
 
 def test_a_certificate_component_carries_the_fields_a_cbom_needs(document):
-    certificate = next(c for c in document['components']
-                       if c['cryptoProperties']['assetType'] == 'certificate'
-                       and ((urlparse(c['name']).hostname == 'sha384.badssl.com')
-                            or (c['name'] == 'sha384.badssl.com')))
+    certificate = next(
+        c for c in document['components']
+        if c['cryptoProperties']['assetType'] == 'certificate'
+        and common_name(c['name']) == 'sha384.badssl.com')
     properties = certificate['cryptoProperties']['certificateProperties']
     assert properties['certificateFormat'] == 'X.509'
     assert properties['subjectName'].startswith('CN=sha384.badssl.com')
@@ -148,14 +182,7 @@ def test_occurrences_record_where_an_asset_was_seen(document):
     """
     group = by_name(document, 'secp256r1')
     locations = [o['location'] for o in group['evidence']['occurrences']]
-
-    def is_badssl_443(location):
-        parsed = urlparse(location)
-        if not parsed.netloc and parsed.path:
-            parsed = urlparse(f"//{location}")
-        return parsed.hostname == 'badssl.com' and parsed.port == 443
-
-    assert any(is_badssl_443(location) for location in locations)
+    assert ('badssl.com', '443') in {host_and_port(l) for l in locations}
 
 
 # --------------------------------------------------------------------------
