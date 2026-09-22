@@ -21,7 +21,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI
 from tinydb import TinyDB
 
+import collections
 import datetime as dt
+import sys
 
 import ctypes as ct
 import asyncio
@@ -32,6 +34,14 @@ import asyncio
 # package -- in particular the packet parsers -- can be imported and tested on
 # a machine that has neither, which is what CI and non-Linux development need.
 
+# Per-run write counters, so that silent data loss becomes visible. Module
+# scope mirrors the parse counters and keeps them readable from anywhere.
+WRITE_STATS = collections.Counter()
+
+# How many inserts may be in flight before new records are dropped. A burst of
+# handshakes must not be allowed to queue futures without bound.
+DEFAULT_MAX_PENDING = 1000
+
 ETH_HDR_LEN = 14
 IP4_HDR_LEN = 20
 TCP_HDR_LEN = 20
@@ -41,7 +51,8 @@ class CryptoMon(object):
     def __init__(self, iface="enp0s1", fapiapp: FastAPI = "",
                  mongodb=False, settings="",
                  bpf_code=bpf_ipv4_txt, pcap_file="",
-                 data_tag="", load_method="library"):
+                 data_tag="", load_method="library",
+                 max_pending=DEFAULT_MAX_PENDING):
         if not settings:
             raise Exception("No settings provided... Aborting.")
         self.data_tag = data_tag if data_tag else ""
@@ -88,17 +99,29 @@ class CryptoMon(object):
                         name=self.fn.name, parent="ffff:fff2", # parent can be :fff2 for ingress or :fff3 for egress. 
                         classid=1, direct_action=True)
         self.b["skb_events"].open_perf_buffer(self.get_ebpf_data)
-        self.fapi_on = False
+        # Dispatch on an explicit backend name. The previous code set
+        # self.mongodb = False as its "no mongo" sentinel and then tested
+        # `self.mongodb is not None`, which is True for False -- so the Mongo
+        # branch was taken with a bool in hand and raised TypeError, and the
+        # TinyDB branch was unreachable.
+        self.max_pending = max_pending
+        self._pending = set()
+        self._warned_writes = set()
+        self.mongodb_client = None
+        self.mongodb = None
+        self.tinydb = None
+        self.fapi_app = None
+        self.fapi_on = bool(fapiapp)
         if fapiapp:
-            self.fapi_on = True
             self.fapi_app = fapiapp
-        if mongodb:
+            self.backend = 'fapi'
+        elif mongodb:
             self.mongodb_client = AsyncIOMotorClient(settings.DB_URL)
             self.mongodb = self.mongodb_client[settings.DB_NAME]
+            self.backend = 'mongodb'
         else:
-            self.mongodb = False
-        if not fapiapp and not mongodb:
             self.tinydb = TinyDB("cryptomon.json")
+            self.backend = 'tinydb'
         
     def get_ebpf_data(self, cpu, data, size):
         class SkbEvent(ct.Structure):
@@ -126,30 +149,106 @@ class CryptoMon(object):
             data_object['tag'] = self.data_tag
         # add timestamp
         data_object['ts'] = dt.datetime.now().timestamp()
-        if self.fapi_on:
-            self.fapi_app.mongodb["cryptomon"].insert_one(data_object)
-        elif self.mongodb is not None:
-            self.mongodb["cryptomon"].insert_one(data_object)
+        if self.backend == 'fapi':
+            self._insert_mongo(self.fapi_app.mongodb["cryptomon"], data_object)
+        elif self.backend == 'mongodb':
+            self._insert_mongo(self.mongodb["cryptomon"], data_object)
         else:
-            self.tinydb.insert(data_object)
-            # print(data_object)
-            # print("================================")
+            try:
+                self.tinydb.insert(data_object)
+            except Exception as exc:
+                WRITE_STATS['failed'] += 1
+                self._note_write_error(exc)
+            else:
+                WRITE_STATS['inserted'] += 1
+
+    def _insert_mongo(self, collection, data_object):
+        """
+        Issue an insert and keep hold of its future so the result is retrieved.
+
+        motor 3.5.1 returns an already-scheduled Future rather than a
+        coroutine, so the write does go out even when nothing awaits it -- but
+        the result was then discarded, and with it every auth failure, network
+        error, validation error and duplicate key. Retrieving it from a
+        done-callback keeps the packet path non-blocking while making failures
+        countable.
+        """
+        if len(self._pending) >= self.max_pending:
+            WRITE_STATS['dropped_backpressure'] += 1
+            return
+        try:
+            future = collection.insert_one(data_object)
+        except RuntimeError as exc:
+            # motor needs a running event loop to schedule the write. This is
+            # what makes the synchronous run() path unusable with MongoDB.
+            WRITE_STATS['failed'] += 1
+            self._note_write_error(exc)
+            return
+        self._pending.add(future)
+        future.add_done_callback(self._insert_done)
+
+    def _insert_done(self, future):
+        self._pending.discard(future)
+        try:
+            future.result()
+        except Exception as exc:
+            WRITE_STATS['failed'] += 1
+            self._note_write_error(exc)
+        else:
+            WRITE_STATS['inserted'] += 1
+
+    def _note_write_error(self, exc):
+        """Count every failure; print the first of each kind, once."""
+        name = type(exc).__name__
+        WRITE_STATS['failed_' + name] += 1
+        if name not in self._warned_writes:
+            self._warned_writes.add(name)
+            print("[!] {0} write failed ({1}: {2}). Further occurrences are "
+                  "counted in cryptomon.WRITE_STATS.".format(
+                      self.backend, name, exc), file=sys.stderr)
+
+    def close(self):
+        """Release the interface and the storage client. Safe to call twice."""
+        if self.unload_tc_device:
+            try:
+                self.ipr.tc("del-filter", "bpf", self.if_name)
+            except Exception:
+                WRITE_STATS['tc_cleanup_failed'] += 1
+            self.unload_tc_device = False
+        if self.mongodb_client is not None:
+            self.mongodb_client.close()
+            self.mongodb_client = None
+        if self.tinydb is not None:
+            self.tinydb.close()
+            self.tinydb = None
 
     def run(self):
-        while True:
-            try:
+        """
+        Synchronous poll loop.
+
+        The MongoDB backends need a running event loop for motor to schedule
+        writes, so pair those with run_async(); this path suits the TinyDB
+        backend. Previously the cleanup sat in a `finally` *inside* the loop,
+        so the TC filter was deleted on every poll, and KeyboardInterrupt only
+        `pass`ed -- leaving Ctrl-C unable to stop the loop at all.
+        """
+        try:
+            while True:
                 self.b.perf_buffer_poll()
-            except KeyboardInterrupt:
-                self.mongodb_client.close()
-                pass
-            finally:
-                if self.unload_tc_device:
-                    self.ipr.tc("del-filter", "bpf", self.if_name)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.close()
 
     async def run_async(self):
-        while True:
-            await asyncio.sleep(1)
-            self.b.perf_buffer_poll()
+        try:
+            while True:
+                await asyncio.sleep(1)
+                self.b.perf_buffer_poll()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            self.close()
         
     def tls_parse_crypto(self, skb_event):
         data = {}
