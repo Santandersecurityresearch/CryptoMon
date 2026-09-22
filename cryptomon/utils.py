@@ -80,9 +80,18 @@ def describe_codepoints(table, values, stat=None):
 
 
 def lst2int(in_lst):
+    """
+    Big-endian integer from a byte sequence of at most 8 bytes.
+
+    Raises on anything longer. It used to return 0, which is a plausible
+    offset and a plausible length, so a caller that overshot got a silently
+    wrong answer instead of an error. A 16-byte IPv6 address hits exactly
+    that path -- use bytes_to_ip() for addresses.
+    """
     lenlst = len(in_lst)
     if lenlst > 8:
-        return 0
+        raise ValueError(
+            f"lst2int takes at most 8 bytes, got {lenlst}")
     out_int = 0
     lenlst -= 1
     for i in range(len(in_lst)):
@@ -137,6 +146,20 @@ def lst2str(in_lst):
     return ''.join([chr(x) for x in in_lst])
 
 
+def bytes_to_ip(raw_bytes):
+    """
+    Format 4 or 16 raw bytes as an address.
+
+    Unambiguous, unlike decimal_to_human(), which decides the family by
+    magnitude and so renders every IPv6 address below ::ffff:ffff -- ::1
+    among them -- as IPv4.
+    """
+    try:
+        return str(ipaddress.ip_address(bytes(raw_bytes)))
+    except (ValueError, TypeError):
+        return "Invalid input"
+
+
 def decimal_to_human(input_value):
     try:
         decimal_ip = int(input_value)
@@ -149,9 +172,13 @@ def decimal_to_human(input_value):
         return "Invalid input"
 
 
+# The scan below needs 15 bytes of lookahead from the marker.
+CERT_LOOKAHEAD = 15
+
+
 def cert_guess(in_array):
-    match = 0
-    for i in range(len(in_array)):
+    match = None
+    for i in range(max(0, len(in_array) - CERT_LOOKAHEAD)):
         if in_array[i] == 0x0b:
             # look for a SEQUENCE 0x30, 0x82
             # as certificates are looong, and then
@@ -162,7 +189,12 @@ def cert_guess(in_array):
                 match = i
                 break  # break out and try the cert
     output = {}
-    if match == 0:
+    if match is None:
+        # `match = 0` used to mean both "not found" and "found at offset 0",
+        # so a certificate at the very start was discarded. None separates
+        # them. The loop bound above also stops the scan reading past the end:
+        # in_array[i+10] raised IndexError on roughly one ClientHello in ten,
+        # which the caller counted as cert_error.
         return output  # no certificato
     if jc is None:
         PARSE_STATS['cert_no_parser'] += 1
@@ -174,9 +206,12 @@ def cert_guess(in_array):
     try:
         cert_len = lst2int(in_array[match+7:match+10])
         cert_begin = match + 10
-        if in_array[cert_begin] != 0x30:  # something is wrong
-            return output
-        cert_list = in_array[cert_begin:cert_begin+cert_len]
+        if cert_begin >= len(in_array) or in_array[cert_begin] != 0x30:
+            return output  # something is wrong
+        # Clamp to what was actually captured. A certificate chain routinely
+        # spans several TCP segments, so a declared length longer than the
+        # frame is the normal case rather than an anomaly.
+        cert_list = in_array[cert_begin:min(cert_begin+cert_len, len(in_array))]
         # print(''.join('{:02x}'.format(x) for x in cert_list))
         # cert_data = x509.load_der_x509_certificate(bytes(cert_list))
         output = jc.parse('x509_cert', bytes(cert_list))
