@@ -1,6 +1,6 @@
 import uuid
-from typing import List, Optional, Union, Any, Dict, AnyStr, List
-from pydantic import BaseModel, Field
+from typing import Any, AnyStr, Dict, List, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # JSON is really just arrays and objects that look like this...
@@ -28,9 +28,9 @@ class TLSDataModel(BaseModel):
     eth: EthModel = Field(default_factory=EthModel)
     tls: Optional[dict] = Field(...)
 
-    class Config:
-        allow_population_by_field_name = True
-        schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "id": "00010203-0405-0607-0809-0a0b0c0d0e0f",
                 "ptype": 'server',
@@ -42,7 +42,7 @@ class TLSDataModel(BaseModel):
                     "kex_group": 'x25519'
                 }
             }
-        }
+        })
 
 
 class UpdateTLSDataModel(BaseModel):
@@ -53,8 +53,8 @@ class UpdateTLSDataModel(BaseModel):
     eth: Optional[EthModel] = None
     tls: Optional[dict] = None
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example":   {
                 "ptype": 'server',
                 "eth": {"src": {"ipv4": '172.64.155.119', "port": 443},
@@ -65,4 +65,4 @@ class UpdateTLSDataModel(BaseModel):
                     "kex_group": 'x25519'
                 }
             }
-        }
+        })
