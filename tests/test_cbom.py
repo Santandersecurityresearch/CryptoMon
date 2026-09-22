@@ -16,6 +16,7 @@ import datetime
 import io
 import json
 import pathlib
+from urllib.parse import urlparse
 
 import pytest
 
@@ -118,7 +119,8 @@ def test_a_protocol_component_carries_its_cipher_suites(document):
 def test_a_certificate_component_carries_the_fields_a_cbom_needs(document):
     certificate = next(c for c in document['components']
                        if c['cryptoProperties']['assetType'] == 'certificate'
-                       and 'sha384.badssl.com' in c['name'])
+                       and ((urlparse(c['name']).hostname == 'sha384.badssl.com')
+                            or (c['name'] == 'sha384.badssl.com')))
     properties = certificate['cryptoProperties']['certificateProperties']
     assert properties['certificateFormat'] == 'X.509'
     assert properties['subjectName'].startswith('CN=sha384.badssl.com')
