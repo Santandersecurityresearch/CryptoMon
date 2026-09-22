@@ -13,7 +13,7 @@ output is meant to be attestable is worse than a crash.
 """
 from typing import NamedTuple
 
-from cryptomon.utils import decimal_to_human, lst2int
+from cryptomon.utils import bytes_to_ip, lst2int
 
 ETH_HDR_LEN = 14          # Ethernet II header, before any VLAN tag
 IP4_HDR_LEN = 20          # minimum IPv4 header; the real one comes from IHL
@@ -27,12 +27,64 @@ MAX_VLAN_TAGS = 2         # one 802.1Q tag, or a QinQ pair; more is malformed
 
 IP_PROTO_TCP = 6
 
+IPV6_HDR_LEN = 40                 # fixed; options live in extension headers
+# Extension headers carrying a length in 8-octet units, not counting the
+# first 8. RFC 8200 requires them to be walked in order to find the payload.
+IPV6_OPTION_HEADERS = (0, 43, 60, 135)   # hop-by-hop, routing, dest opts, mobility
+IPV6_FRAGMENT = 44                # fixed 8 bytes
+IPV6_AH = 51                      # length in 4-octet units, minus 2
+IPV6_NO_NEXT = 59
+MAX_IPV6_EXT_HEADERS = 8          # a chain longer than this is hostile, not real
+
 
 class DecodedFrame(NamedTuple):
     """What the protocol parsers need from the framing, and nothing else."""
     endpoints: dict        # the 'eth' block recorded on every document
     payload_offset: int    # first byte after the TCP header
-    ip_total_len: int      # IPv4 total length field
+    ip_total_len: int      # whole IP datagram, header included, both families
+    version: int           # 4 or 6
+
+
+def _walk_ipv6(raw, ip_offset):
+    """
+    Walk an IPv6 header and its extension header chain to the TCP header.
+
+    IPv6 moved options out of the fixed header into a chain, so unlike IPv4
+    there is no header-length field to read -- the chain has to be walked.
+    Returns (src, dst, tcp_offset, total_len), or None when the chain does
+    not end at TCP.
+
+    A non-initial fragment is refused: it carries no TCP header, so anything
+    read at that offset would be payload bytes dressed up as one.
+    """
+    if len(raw) < ip_offset + IPV6_HDR_LEN:
+        return None
+    payload_len = lst2int(raw[ip_offset + 4:ip_offset + 6])
+    next_header = raw[ip_offset + 6]
+    src = bytes(raw[ip_offset + 8:ip_offset + 24])
+    dst = bytes(raw[ip_offset + 24:ip_offset + 40])
+
+    offset = ip_offset + IPV6_HDR_LEN
+    for _ in range(MAX_IPV6_EXT_HEADERS):
+        if next_header == IP_PROTO_TCP:
+            return src, dst, offset, IPV6_HDR_LEN + payload_len
+        if next_header == IPV6_NO_NEXT:
+            return None
+        if len(raw) < offset + 8:
+            return None
+        if next_header == IPV6_FRAGMENT:
+            # offset field is the top 13 bits of the 2 bytes at +2
+            if (lst2int(raw[offset + 2:offset + 4]) >> 3) != 0:
+                return None
+            next_header, ext_len = raw[offset], 8
+        elif next_header == IPV6_AH:
+            next_header, ext_len = raw[offset], (raw[offset + 1] + 2) * 4
+        elif next_header in IPV6_OPTION_HEADERS:
+            next_header, ext_len = raw[offset], (raw[offset + 1] + 1) * 8
+        else:
+            return None                    # ESP, ICMPv6, UDP, anything else
+        offset += ext_len
+    return None                            # chain too long to be genuine
 
 
 def decode_ipv4_tcp(raw):
@@ -44,9 +96,9 @@ def decode_ipv4_tcp(raw):
     callers drop the packet, which is the honest outcome for a frame this
     parser cannot read.
 
-    Not handled here: IPv6 (issue #19, and there are already two unmerged
-    implementations of it), and anything below Ethernet such as SLL2 or
-    ERSPAN.
+    Handles IPv4 and IPv6, with or without VLAN tags. Not handled: anything
+    below Ethernet such as SLL2 or ERSPAN, and IPv6 chains ending anywhere
+    but TCP.
 
     Note the live path has its own copy of this problem. bpf.py derives the
     IPv4 header length correctly (ip->hlen << 2) but hard-codes
@@ -69,34 +121,45 @@ def decode_ipv4_tcp(raw):
         ip_offset += 4
         tags += 1
 
-    if ethertype != ETHERTYPE_IPV4:
-        return None
-
     # --- network layer --------------------------------------------------
-    if len(raw) < ip_offset + IP4_HDR_LEN:
+    if ethertype == ETHERTYPE_IPV6:
+        walked = _walk_ipv6(raw, ip_offset)
+        if walked is None:
+            return None
+        src, dst, tcp_offset, ip_total_len = walked
+        version, family = 6, 'ipv6'
+    elif ethertype == ETHERTYPE_IPV4:
+        if len(raw) < ip_offset + IP4_HDR_LEN:
+            return None
+        ip_header_len = (raw[ip_offset] & 0x0F) * 4
+        if not IP4_HDR_LEN <= ip_header_len <= 60:
+            return None                  # IHL below 5 or above 15 is malformed
+        if raw[ip_offset + 9] != IP_PROTO_TCP:
+            return None
+        ip_total_len = lst2int(raw[ip_offset + 2:ip_offset + 4])
+        src = bytes(raw[ip_offset + 12:ip_offset + 16])
+        dst = bytes(raw[ip_offset + 16:ip_offset + 20])
+        tcp_offset = ip_offset + ip_header_len
+        version, family = 4, 'ipv4'
+    else:
         return None
-    ip_header_len = (raw[ip_offset] & 0x0F) * 4
-    if not IP4_HDR_LEN <= ip_header_len <= 60:
-        return None                      # IHL below 5 or above 15 is malformed
-    if raw[ip_offset + 9] != IP_PROTO_TCP:
-        return None
-
-    ip_total_len = lst2int(raw[ip_offset + 2:ip_offset + 4])
-    src = lst2int(raw[ip_offset + 12:ip_offset + 16])
-    dst = lst2int(raw[ip_offset + 16:ip_offset + 20])
 
     # --- transport layer -------------------------------------------------
-    tcp_offset = ip_offset + ip_header_len
     if len(raw) < tcp_offset + TCP_HDR_LEN:
         return None
     tcp_header_len = (raw[tcp_offset + 12] >> 4) * 4
     if not TCP_HDR_LEN <= tcp_header_len <= 60:
         return None
 
+    # The address key names its family. Existing documents and queries use
+    # eth.src.ipv4, so IPv4 records keep exactly the shape they had; IPv6
+    # records carry eth.src.ipv6 instead of overloading a field whose name
+    # would then be a lie.
     endpoints = {
-        'src': {'ipv4': decimal_to_human(str(src)),
+        'src': {family: bytes_to_ip(src),
                 'port': lst2int(raw[tcp_offset:tcp_offset + 2])},
-        'dst': {'ipv4': decimal_to_human(str(dst)),
+        'dst': {family: bytes_to_ip(dst),
                 'port': lst2int(raw[tcp_offset + 2:tcp_offset + 4])},
     }
-    return DecodedFrame(endpoints, tcp_offset + tcp_header_len, ip_total_len)
+    return DecodedFrame(endpoints, tcp_offset + tcp_header_len, ip_total_len,
+                        version)

@@ -15,8 +15,9 @@ Writes tests/fixtures/synthetic/*.pcap, which are committed.
 import pathlib
 import sys
 
-from scapy.all import (Dot1Q, Ether, IP, IPOption_NOP, IPv6, PcapReader,
-                       TCP, UDP, Raw, wrpcap)
+from scapy.all import (Dot1Q, Ether, IP, IPOption_NOP, IPv6,
+                       IPv6ExtHdrDestOpt, IPv6ExtHdrFragment,
+                       PcapReader, TCP, UDP, Raw, wrpcap)
 
 HERE = pathlib.Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures"
@@ -61,6 +62,18 @@ def main():
         # Not TCP at all: must be refused, not read at TCP's offsets.
         "udp": Ether(**eth) / IP(src="10.0.0.1", dst="10.0.0.2")
                / UDP(sport=54321, dport=443) / Raw(payload),
+        # IPv6 moved options into a chain, so the TCP header is only found
+        # by walking it -- there is no header-length field to read.
+        "ipv6_extheader": Ether(**eth)
+                          / IPv6(src="2001:db8::1", dst="2001:db8::2")
+                          / IPv6ExtHdrDestOpt()
+                          / TCP(**tcp) / Raw(payload),
+        # A non-initial fragment carries no TCP header at all; reading one
+        # there would dress payload bytes up as ports.
+        "ipv6_fragment": Ether(**eth)
+                         / IPv6(src="2001:db8::1", dst="2001:db8::2")
+                         / IPv6ExtHdrFragment(offset=64, nh=6)
+                         / Raw(payload),
     }
     for name, pkt in cases.items():
         path = OUT / f"{name}.pcap"
