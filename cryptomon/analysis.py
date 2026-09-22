@@ -181,6 +181,16 @@ def classify_certificate(certificate):
     that have to be replaced first are not chosen at random.
     """
     algorithm = certificate.get('public_key_algorithm')
+    if not algorithm:
+        # The certificate did not decode far enough to have a key -- it is
+        # one of the `parse_error` records describe_certificate returns. It
+        # was still on the wire, so it is still counted, but under a name
+        # rather than under None. A None label becomes a None dict key in
+        # the summary, and `json.dumps(..., sort_keys=True)` then cannot
+        # order it against the string keys beside it: one unreadable
+        # certificate anywhere in a capture killed the whole JSON export.
+        # Found by fuzzing whole capture files through every exporter.
+        return UNKNOWN, 'unreadable'
     bits = certificate.get('public_key_size')
     verdict = classify_algorithm(
         certificate.get('public_key_curve') or algorithm)

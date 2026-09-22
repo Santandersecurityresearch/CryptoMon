@@ -12,7 +12,7 @@ from cryptomon.data import TLS_DICT, TLS_GROUPS_DICT
 from cryptomon.parsers.framing import decode_ipv4_tcp
 from cryptomon.utils import (PARSE_STATS, cert_guess, describe_codepoint,
                              describe_codepoints, get_tls_version, is_grease,
-                             lst2int, lst2str, parse_sigalgs)
+                             lst2int, lst2str, parse_sigalgs, printable_text)
 
 
 # A TLS record is a 5-byte header -- type, version(2), length(2) -- followed
@@ -192,7 +192,11 @@ def parse_handshake(buf, hs_start, limit):
                 # Clamp: a hostname length of 0xffff would otherwise pull in
                 # everything after it, whatever that happened to be.
                 name_end = min(name_offset + len_hostname, limit)
-                data['tls']['hostname'] = lst2str(buf[name_offset:name_end])
+                # Printable ASCII only: the bytes are the sender's choice,
+                # and every consumer of this field -- CSV, JSON, the report
+                # page, a log line -- assumes a hostname.
+                data['tls']['hostname'] = printable_text(
+                    lst2str(buf[name_offset:name_end]), 'nonprintable_sni')
             if ext_type == EXT_SUPPORTED_GROUPS:  # supported ECC groups
                 group_offset = ext_offset + 4
                 group_list_len = lst2int(buf[group_offset:group_offset + 2])

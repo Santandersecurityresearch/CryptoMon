@@ -52,6 +52,26 @@ jobs:
       - name: parsers vs the tshark oracle, over committed captures
         run: pytest -q
 
+  fuzz:
+    name: fuzz the parsers
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: mutate the corpus and run every parser over it
+        # Every byte this project reads is chosen by somebody else -- the
+        # wire, a capture file, and shortly a browser upload. The budget is
+        # wall-clock rather than a case count so that a slower runner does
+        # less work instead of failing, and the seed is fixed so a failure
+        # here is reproducible with the same command locally.
+        run: ./tests/tools/fuzz.py --seconds 60 --seed ci
+
   oracle:
     name: the tshark oracle has not drifted
     needs: smoke

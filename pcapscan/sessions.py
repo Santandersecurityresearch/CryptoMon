@@ -36,7 +36,7 @@ import collections
 from cryptomon.data import SSH_SECTIONS, TLS_GROUPS_DICT
 from cryptomon.parsers.framing import decode_frame
 from cryptomon.parsers.tls import parse_hello_message
-from cryptomon.utils import describe_codepoint, lst2int
+from cryptomon.utils import describe_codepoint, lst2int, printable_text
 from pcapscan.reader import Reader
 from pcapscan.reassembly import Reassembler
 from pcapscan.records import (HS_CERTIFICATE, HS_CLIENT_HELLO,
@@ -298,7 +298,8 @@ def parse_ssh_stream(data):
     newline = data.find(b'\r\n', 0, MAX_SSH_BANNER + 2)
     if newline < 0:
         return out
-    out['banner'] = data[:newline].decode('ascii', 'replace')
+    out['banner'] = printable_text(
+        data[:newline].decode('ascii', 'replace'), 'nonprintable_ssh')
     offset = newline + 2
     if offset + 6 + SSH_COOKIE_LEN > len(data):
         return out
@@ -316,8 +317,10 @@ def parse_ssh_stream(data):
         offset += 4
         if length > MAX_SSH_NAMELIST or offset + length > end:
             break
-        out[section] = data[offset:offset + length].decode(
-            'ascii', 'replace').split(',')
+        out[section] = [
+            printable_text(name, 'nonprintable_ssh')
+            for name in data[offset:offset + length].decode(
+                'ascii', 'replace').split(',')]
         offset += length
     return out
 

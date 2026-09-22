@@ -121,44 +121,50 @@ def _public_key_description(certificate):
     return type(key).__name__.replace('PublicKey', ''), None, None
 
 
-def _oid(value):
-    try:
-        return value.dotted_string
-    except AttributeError:
-        return None
+def _field(getter, default=None):
+    """
+    Read one lazily-decoded certificate field, or give up on that field alone.
 
+    `cryptography` decodes a certificate's body lazily: load_der_x509_certificate
+    succeeds on any structurally plausible DER, and the individual attributes
+    raise when *they* are decoded -- with a KeyError from an unknown attribute
+    OID, or a ValueError out of the ASN.1 parser. So a try/except around the
+    load is not a guard at all.
 
-def _name(value):
+    Nor is one around the helper that formats the value. `_name(cert.subject)`
+    evaluates `cert.subject` before `_name` is entered, so the guard inside
+    `_name` never runs; that is exactly how this escaped, and fuzzing is what
+    found it. Wrapping the *access* rather than the formatting is the fix, and
+    it has to be every access, because any of them can be the next one.
+    """
     try:
-        return value.rfc4514_string()
+        return getter()
     except Exception:
-        return None
+        return default
 
 
 def _subject_alt_names(certificate):
-    try:
-        extension = certificate.extensions.get_extension_for_class(
-            x509.SubjectAlternativeName)
-    except x509.ExtensionNotFound:
-        return []
-    except Exception:
+    extension = _field(lambda: certificate.extensions.get_extension_for_class(
+        x509.SubjectAlternativeName))
+    if extension is None:
         return []
     names = []
-    for general_name in extension.value:
-        try:
-            names.append(str(general_name.value))
-        except Exception:
-            continue
+    for general_name in _field(lambda: list(extension.value), []):
+        name = _field(lambda: str(general_name.value), _MISSING)
+        if name is not _MISSING:
+            names.append(name)
     return names
 
 
 def _is_ca(certificate):
-    try:
-        constraints = certificate.extensions.get_extension_for_class(
-            x509.BasicConstraints)
-    except Exception:
-        return None
-    return bool(constraints.value.ca)
+    return _field(lambda: bool(
+        certificate.extensions.get_extension_for_class(
+            x509.BasicConstraints).value.ca))
+
+
+# A sentinel distinct from None, so that "this field decoded to None" and
+# "this field would not decode" stay apart.
+_MISSING = object()
 
 
 def _timestamp(certificate, field):
@@ -170,7 +176,7 @@ def _timestamp(certificate, field):
     than emitting a warning on one and failing on the other.
     """
     for attribute in (field + '_utc', field):
-        value = getattr(certificate, attribute, None)
+        value = _field(lambda: getattr(certificate, attribute, None))
         if value is not None:
             return value.isoformat()
     return None
@@ -182,8 +188,14 @@ def describe_certificate(der):
 
     A chain from a capture is attacker-supplied by definition, and a
     malformed certificate in the middle of one must not lose the rest of the
-    handshake. A certificate that will not parse is reported as such, with
-    its fingerprint, which is still enough to recognise it again.
+    handshake. A certificate that will not load at all is reported as such,
+    with its fingerprint, which is still enough to recognise it again.
+
+    A certificate that loads but whose individual fields will not decode is
+    reported field by field, with the ones that failed named in
+    `undecodable_fields`. "We could not read the subject" and "this
+    certificate has no subject" are different statements, and a report that
+    conflated them would be worth less than one that admits the gap.
     """
     record = {
         'fingerprint_sha256': hashlib.sha256(der).hexdigest(),
@@ -196,40 +208,50 @@ def describe_certificate(der):
         return record
 
     algorithm, bits, curve = _public_key_description(certificate)
-    record.update({
-        'subject': _name(certificate.subject),
-        'issuer': _name(certificate.issuer),
-        'serial_number': format(certificate.serial_number, 'x'),
-        'not_before': _timestamp(certificate, 'not_valid_before'),
-        'not_after': _timestamp(certificate, 'not_valid_after'),
-        'public_key_algorithm': algorithm,
-        'public_key_size': bits,
-        'signature_algorithm': getattr(
+    fields = {
+        'subject': lambda: certificate.subject.rfc4514_string(),
+        'issuer': lambda: certificate.issuer.rfc4514_string(),
+        'serial_number': lambda: format(certificate.serial_number, 'x'),
+        'not_before': lambda: _timestamp(certificate, 'not_valid_before'),
+        'not_after': lambda: _timestamp(certificate, 'not_valid_after'),
+        'signature_algorithm': lambda: getattr(
             certificate.signature_algorithm_oid, '_name', None),
-        'signature_algorithm_oid': _oid(certificate.signature_algorithm_oid),
-        'version': certificate.version.name,
-    })
+        'signature_algorithm_oid':
+            lambda: certificate.signature_algorithm_oid.dotted_string,
+        'version': lambda: certificate.version.name,
+    }
+    undecodable = []
+    for name, getter in fields.items():
+        value = _field(getter, _MISSING)
+        if value is _MISSING:
+            undecodable.append(name)
+            record[name] = None
+        else:
+            record[name] = value
+    record['public_key_algorithm'] = algorithm
+    record['public_key_size'] = bits
     if curve:
         record['public_key_curve'] = curve
-    public_key_oid = getattr(certificate, 'public_key_algorithm_oid', None)
+    public_key_oid = _field(
+        lambda: certificate.public_key_algorithm_oid.dotted_string)
     if public_key_oid is not None:
         # CycloneDX joins cryptographic assets on OIDs, so carrying the
         # identifier as well as the name is what lets a CBOM built from
         # traffic line up with one built from source.
-        record['public_key_algorithm_oid'] = _oid(public_key_oid)
-    try:
-        hash_algorithm = certificate.signature_hash_algorithm
-    except Exception:
-        hash_algorithm = None
+        record['public_key_algorithm_oid'] = public_key_oid
+    hash_algorithm = _field(lambda: certificate.signature_hash_algorithm)
     if hash_algorithm is not None:
-        record['signature_hash'] = hash_algorithm.name
+        record['signature_hash'] = _field(lambda: hash_algorithm.name)
     alt_names = _subject_alt_names(certificate)
     if alt_names:
         record['subject_alt_names'] = alt_names
     is_ca = _is_ca(certificate)
     if is_ca is not None:
         record['is_ca'] = is_ca
-    record['self_signed'] = certificate.subject == certificate.issuer
+    record['self_signed'] = _field(
+        lambda: certificate.subject == certificate.issuer)
+    if undecodable:
+        record['undecodable_fields'] = undecodable
     return record
 
 
