@@ -1,5 +1,6 @@
 import collections
 import ipaddress
+import re
 import sys
 
 try:
@@ -144,6 +145,38 @@ def get_tls_version(in_lst):
 
 def lst2str(in_lst):
     return ''.join([chr(x) for x in in_lst])
+
+
+_NON_PRINTABLE = re.compile(r'[^\x20-\x7e]')
+
+
+def printable_text(value, stat='nonprintable_text'):
+    """
+    A string taken off the wire, reduced to printable ASCII.
+
+    A TLS server_name or an SSH algorithm name is supposed to be printable
+    ASCII, and everything downstream assumes it is: a CSV column, a JSON
+    document, an HTML page, a log line, a terminal. It is attacker-controlled
+    bytes.
+
+    Found by fuzzing: a corrupted server_name extension carrying a carriage
+    return broke the CSV writer outright ("need to escape, but no escapechar
+    set"), and only on Python 3.10 -- 3.11 quotes the field instead, so the
+    same input produced a crash on one interpreter and a corrupt row on the
+    other. The same bytes in a log line are terminal injection, and a NUL in
+    a hostname is a truncation waiting for whoever compares it.
+
+    Escaped rather than stripped, and counted, because a peer sending
+    something that is not a hostname is itself worth knowing. The escape is
+    reversible; silently deleting the bytes would not be.
+    """
+    if not value:
+        return value
+    if not _NON_PRINTABLE.search(value):
+        return value
+    PARSE_STATS[stat] += 1
+    return _NON_PRINTABLE.sub(
+        lambda match: '\\x{0:02x}'.format(ord(match.group())), value)
 
 
 def bytes_to_ip(raw_bytes):

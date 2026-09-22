@@ -22,7 +22,7 @@ assumed.
 """
 from typing import NamedTuple
 
-from cryptomon.utils import bytes_to_ip, lst2int
+from cryptomon.utils import PARSE_STATS, bytes_to_ip, lst2int
 
 ETH_HDR_LEN = 14          # Ethernet II header, before any VLAN tag
 IP4_HDR_LEN = 20          # minimum IPv4 header; the real one comes from IHL
@@ -239,6 +239,18 @@ def decode_frame(raw, linktype=LINKTYPE_ETHERNET):
         return None
     tcp_header_len = (raw[tcp_offset + 12] >> 4) * 4
     if not TCP_HDR_LEN <= tcp_header_len <= 60:
+        return None
+    if len(raw) < tcp_offset + tcp_header_len:
+        # The frame ends inside its own TCP header, so where the payload
+        # begins is not knowable. Without this the offsets still come back:
+        # payload_offset lands past the end of the buffer while payload_end
+        # falls back to len(raw), so `payload_end - payload_offset` is
+        # negative. Slicing with that is harmlessly empty, which is why it
+        # went unnoticed; arithmetic on it is not. Found by fuzzing, and no
+        # frame in the 160,221-frame corpus is affected -- a capture whose
+        # snaplen cuts the TCP header is too short to carry a handshake
+        # anyway.
+        PARSE_STATS['truncated_tcp_header'] += 1
         return None
 
     # Where the payload really ends. Ethernet pads a frame out to 60 bytes,

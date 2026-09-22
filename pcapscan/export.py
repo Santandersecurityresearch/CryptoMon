@@ -110,6 +110,29 @@ def write_json(records, stream, summary=None, source=None):
     return written
 
 
+def _readable_time(timestamp):
+    """
+    An ISO rendering of an epoch timestamp, or None when there is not one.
+
+    A capture file's timestamp field is four bytes of whatever the file says,
+    so a corrupt one lands outside the year range datetime can represent and
+    `fromtimestamp` raises -- taking down the export after every packet in
+    the capture had already parsed successfully. Found by fuzzing whole
+    capture files.
+
+    The raw value stays in the `ts` column beside this one, so degrading to
+    None loses nothing: `ts` is the data and this is a convenience rendering
+    of it.
+    """
+    if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(
+            timestamp, datetime.timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def _join(values):
     if not values:
         return ''
@@ -130,9 +153,7 @@ def flatten(record):
     versions = tls.get('tls_versions')
     row = {
         'ts': timestamp,
-        'time': (datetime.datetime.fromtimestamp(
-            timestamp, datetime.timezone.utc).isoformat()
-            if isinstance(timestamp, (int, float)) else None),
+        'time': _readable_time(timestamp),
         'duration': record.get('duration'),
         'src': src.get('ipv4') or src.get('ipv6'),
         'src_port': src.get('port'),
