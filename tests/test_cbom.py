@@ -148,7 +148,14 @@ def test_occurrences_record_where_an_asset_was_seen(document):
     """
     group = by_name(document, 'secp256r1')
     locations = [o['location'] for o in group['evidence']['occurrences']]
-    assert any('badssl.com:443' in location for location in locations)
+
+    def is_badssl_443(location):
+        parsed = urlparse(location)
+        if not parsed.netloc and parsed.path:
+            parsed = urlparse(f"//{location}")
+        return parsed.hostname == 'badssl.com' and parsed.port == 443
+
+    assert any(is_badssl_443(location) for location in locations)
 
 
 # --------------------------------------------------------------------------
