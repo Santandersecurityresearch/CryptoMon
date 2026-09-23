@@ -103,7 +103,9 @@ Both published ports bind `127.0.0.1`. MongoDB is published too, on
 `127.0.0.1:27017`, because `mongosh` from the host is how this project's own
 documentation says to look at the data and because the sensor profile
 (below) runs with host networking and cannot resolve a compose service name.
-Set `MONGO_PORT=` empty in `.env` if you want neither.
+If you want neither, comment out the `ports:` entry for `mongo` in
+`compose.yaml`. Setting `MONGO_PORT=` empty does *not* unpublish it --
+compose's `:-` substitutes the default for an empty value too.
 
 ### Exposure
 

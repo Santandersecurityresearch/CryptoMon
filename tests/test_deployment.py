@@ -508,12 +508,21 @@ def test_nginx_prefix_matches_the_environment_file():
     for found in prefixes:
         assert found.startswith(PREFIX), found
 
+    # The example ships this COMMENTED OUT, and must: create-service.sh
+    # installs the file verbatim while --nginx is opt-in, so a live
+    # ROOT_PATH would reach a service that nothing is proxying and 404 every
+    # page. The value still has to agree with nginx for the moment somebody
+    # uncomments it, which is what the second half of this checks.
     env = (SYSTEMD_DIR / "api.env.example").read_text(encoding="utf-8")
-    declared = re.search(r"^ROOT_PATH=(.*)$", env, re.M)
-    assert declared, "api.env.example does not set ROOT_PATH"
+    assert not re.search(r"^ROOT_PATH=", env, re.M), (
+        "api.env.example sets ROOT_PATH live; it must ship commented out, "
+        "because create-service.sh installs this file whether or not nginx "
+        "is in front of the service")
+    declared = re.search(r"^#\s*ROOT_PATH=(.*)$", env, re.M)
+    assert declared, "api.env.example does not document ROOT_PATH at all"
     assert declared.group(1).strip() == PREFIX, (
-        "api.env.example says ROOT_PATH={0!r} but the nginx locations are "
-        "under {1!r}".format(declared.group(1).strip(), PREFIX))
+        "api.env.example documents ROOT_PATH={0!r} but the nginx locations "
+        "are under {1!r}".format(declared.group(1).strip(), PREFIX))
 
 
 # ==========================================================================

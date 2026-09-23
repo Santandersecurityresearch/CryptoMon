@@ -932,3 +932,24 @@ def test_the_window_match_can_be_served_by_an_index(loaded):
 
     plan = repr(live(explain))
     assert 'IXSCAN' in plan, plan[:2000]
+
+
+@smoke
+def test_alert_buckets_carry_the_direction_as_its_own_key():
+    """
+    The dashboard needs the sender in a column, not parsed out of a label.
+
+    The name carries it too, spelled as `pcapscan.export._alert_label` spells
+    it, so a CSV cell and a dashboard bar read the same. But `charts.py` was
+    looking for either a `direction` key or the substring "from ", found
+    neither in "handshake_failure (server)", and rendered a red block saying
+    "the aggregation is not reporting it" directly above rows that plainly
+    said (server) -- while the "Sent by" column never appeared at all.
+    """
+    collection = FakeCollection([
+        counted(2),
+        faceted(rows(({'description': 40, 'from_client': False}, 29),
+                     ({'description': 46, 'from_client': True}, 11)))])
+    answer = run(stats.alerts(collection, WINDOW, 20))
+    assert [b.get('direction') for b in answer['buckets']] == \
+        ['server', 'client']

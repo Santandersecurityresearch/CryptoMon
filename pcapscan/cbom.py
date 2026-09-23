@@ -208,7 +208,11 @@ def primitive_for(entry):
     if entry['kind'] == 'cipher':
         # An IKEv2 ENCR transform names one concrete cipher rather than a
         # suite, so the schema's own word for it is available: the AEAD modes
-        # are `ae` and the rest are block ciphers.
+        # are `ae` and the rest are block ciphers -- except RFC 4543's
+        # ENCR_NULL_AUTH_AES_GMAC, which occupies the ENCR slot while
+        # encrypting nothing, and is a MAC.
+        if _is_mac_only(entry['name']):
+            return PRIMITIVE_MAC
         return PRIMITIVE_AE if _is_aead(entry['name']) else PRIMITIVE_BLOCK
     if entry['kind'] == 'prf':
         return PRIMITIVE_KDF
@@ -219,7 +223,14 @@ def primitive_for(entry):
 
 def _is_aead(name):
     flat = _flat(name)
+    if 'nullauth' in flat:
+        return False        # RFC 4543: integrity only, nothing is encrypted
     return any(mode in flat for mode in ('gcm', 'ccm', 'poly1305', 'mgm'))
+
+
+def _is_mac_only(name):
+    """RFC 4543's ENCR_NULL_AUTH_AES_GMAC: a MAC wearing a cipher's slot."""
+    return 'nullauth' in _flat(name)
 
 
 def functions_for(entry):
@@ -230,6 +241,8 @@ def functions_for(entry):
     if entry['kind'] in ('signature', 'certificate-key'):
         return ['sign', 'verify']
     if entry['kind'] == 'cipher':
+        if _is_mac_only(entry['name']):
+            return ['tag']
         return ['encrypt', 'decrypt']
     if entry['kind'] == 'prf':
         return ['keyderive']

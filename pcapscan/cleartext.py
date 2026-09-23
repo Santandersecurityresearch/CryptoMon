@@ -283,6 +283,11 @@ DNS_TYPES = {
 # needs to chain it to a trust anchor or to prove a negative answer.
 DNSSEC_TYPES = frozenset({43, 46, 47, 48, 50, 51, 59, 60})
 
+RRSIG_TYPE = 46                 # the only record that authenticates an RRset
+# 0/1 flags that accumulate across a flow rather than freezing at the first
+# datagram. Emitted as ints rather than bools, so they need naming here.
+STICKY_FLAGS = frozenset({'dnssec_ok', 'dnssec_signed'})
+
 OPT_TYPE = 41                   # the EDNS0 pseudo-record (RFC 6891)
 DNSSEC_OK = 0x8000              # the DO bit, in the OPT record's TTL field
 
@@ -528,7 +533,16 @@ def _dnssec_state(message):
                            '{1}, DO {2}'.format(rclass, (ttl >> 16) & 0xFF,
                                                 'set' if ttl & DNSSEC_OK
                                                 else 'clear'))
-        elif rtype in DNSSEC_TYPES:
+        elif rtype == RRSIG_TYPE:
+            # RRSIG and nothing else. The other DNSSEC record types are
+            # *material* -- DNSKEY is a public key, DS is a delegation
+            # pointer, NSEC proves non-existence -- and a response carrying
+            # a DNSKEY with no RRSIG over it is exactly as unauthenticated
+            # as any other answer. Treating the whole family as proof of
+            # signing meant a plain `dig DNSKEY example.com` came back
+            # labelled "authenticated against the zone key", which is a
+            # claim this tool should never make when it has not seen a
+            # signature.
             signed = True
     for _labels, qtype, _qclass in message.questions:
         if qtype in DNSSEC_TYPES:
@@ -1946,8 +1960,47 @@ class CleartextHandler:
             elif isinstance(value, int) and name in ('questions', 'responses',
                                                      'names'):
                 kept[name] = kept.get(name, 0) + value
-            else:
-                kept.setdefault(name, value)
+            elif name in STICKY_FLAGS:
+                # 0/1 flags that must latch on rather than freeze. These are
+                # emitted as `int(...)` rather than bool, so they miss the
+                # bool branch above and used to hit `setdefault` -- which
+                # pinned them to whatever the *first* datagram said. A DNS
+                # flow of (query with DO set) then (response carrying an
+                # RRSIG) therefore reported `dnssec_signed: 0`, having just
+                # seen the signature.
+                kept[name] = max(kept.get(name, 0), value)
+            elif kept.get(name) is None:
+                # A later real value replaces a None; a later None never
+                # replaces a real value. `setdefault` did neither: it pinned
+                # the field to whatever the *first* datagram said, and DHCP's
+                # `message_type` is legitimately None on a datagram with no
+                # option 53, so the flow then reported None for ever. Note
+                # this still records the key when the first value is None --
+                # "seen, and empty" and "never seen" are different answers.
+                kept[name] = value
+
+    def _protection_reason(self, protocol, protection):
+        """Why this flow earned its verdict, and from which protocol."""
+        exact = self.protection_reasons.get((protocol, protection))
+        if exact:
+            return exact
+        # Whichever protocol earned the verdict. Sorted by how much of the
+        # flow it accounts for, then by name, rather than taken in insertion
+        # order -- otherwise which protocol gets credited for a shared
+        # verdict depends on the order datagrams happened to arrive in, and
+        # the same capture could describe the same flow two ways.
+        candidates = [(other, reason)
+                      for (other, found), reason in
+                      self.protection_reasons.items()
+                      if found == protection and reason]
+        if not candidates:
+            return None
+        other, reason = max(
+            candidates, key=lambda item: (self.protocols.get(item[0], 0),
+                                          item[0]))
+        if other == protocol:
+            return reason
+        return '{0} ({1})'.format(reason, other)
 
     def finish(self):
         """
@@ -1971,8 +2024,16 @@ class CleartextHandler:
             'confidence': self.confidence.get(protocol),
             'reason': self.reasons.get(protocol),
             'protection': protection,
-            'protection_reason': self.protection_reasons.get(
-                (protocol, protection)),
+            # Looked up by the verdict alone when the flow's most-common
+            # protocol did not earn it. A mixed flow is expected here --
+            # three authenticated STUN datagrams plus one MD5-authenticated
+            # NTP datagram is `obsolete` on NTP's account, not STUN's -- and
+            # keying on (protocol, protection) meant that pair had never
+            # been recorded, so the reason came back None and the verdict
+            # read as though STUN had earned it. The verdict is about the
+            # flow; so is its reason.
+            'protection_reason': self._protection_reason(protocol,
+                                                         protection),
             'datagrams': self.datagrams,
             'bytes': self.octets,
             'identified': sum(self.protocols.values()),

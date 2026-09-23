@@ -134,13 +134,23 @@
 {% set total_certs = rollup | map(attribute=1) | sum %}
 {% set safe_certs = rollup | selectattr(0, 'in', ['post-quantum', 'hybrid']) | map(attribute=1) | sum %}
 {% set classical_certs = rollup | selectattr(0, 'equalto', 'classical') | map(attribute=1) | sum %}
-{% if total_certs and not safe_certs %}
+{# `data.other` is what the panel's `limit` left out, and the rollup cannot
+   see it. An absolute claim over a partial count is a wrong claim, so when
+   anything was truncated this says so instead of asserting. #}
+{% if total_certs and not safe_certs and not data.other %}
 <p class="note bad">
   <strong>Not one certificate in this window is quantum-safe.</strong>
   {{ '{:,} of {:,} are classical'.format(classical_certs, total_certs) }}{% if total_certs - classical_certs %}, and {{ '{:,} could not be classified'.format(total_certs - classical_certs) }} from what the capture contained{% endif %}. A key exchange can
   be made quantum-safe by enabling a hybrid group on two endpoints; a
   certificate cannot, because every issuer above it has to change first.
   This is the number with the longest lead time on it.
+</p>
+{% elif total_certs and not safe_certs and data.other %}
+<p class="note bad">
+  <strong>No quantum-safe certificate among the {{ '{:,}'.format(total_certs) }}
+  shown</strong>, but {{ '{:,}'.format(data.other) }} more were left out by the
+  row limit and are not counted here. Raise the limit to make this a complete
+  statement.
 </p>
 {% endif %}
 {% endif %}

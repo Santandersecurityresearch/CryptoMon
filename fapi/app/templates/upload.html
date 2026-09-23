@@ -29,7 +29,8 @@
          accept=".pcap,.pcapng,.gz,application/vnd.tcpdump.pcap" required>
   <p class="note">
     pcap or pcapng, gzipped or not, up to
-    {{ '%.3g'|format(max_bytes / 1048576) }} MiB.
+    {{ '{:,.0f}'.format(max_bytes / 1048576) if max_bytes >= 1048576
+       else '{:,.0f} KiB'.format(max_bytes / 1024) }}{{ ' MiB' if max_bytes >= 1048576 }}.
   </p>
   {% if key_required %}
   <p class="note">

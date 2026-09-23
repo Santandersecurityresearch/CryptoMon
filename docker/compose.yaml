@@ -53,8 +53,11 @@ services:
       # reasons: `mongosh` and `mongoimport` from the host are how this
       # project's own documentation says to look at the data, and the
       # sensor runs with `network_mode: host` and so cannot resolve `mongo`.
-      # Set MONGO_PORT= (empty) in .env to drop the publication entirely if
-      # you use neither.
+      # To drop the publication entirely if you use neither, comment this
+      # line out. Setting MONGO_PORT= empty does NOT do it: `:-` substitutes
+      # the default for an empty value as well as an unset one, so the
+      # database would stay published on 27017 while the operator believed
+      # otherwise -- which is a worse outcome than no knob at all.
       - "${MONGO_BIND:-127.0.0.1}:${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db

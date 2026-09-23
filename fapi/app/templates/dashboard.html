@@ -193,15 +193,22 @@
 {% set kex = overview.key_exchanges_performed or 0 %}
 {% set docs = overview.documents or 0 %}
 {% set safe = overview.quantum_safe or 0 %}
-{% set rollup = ch.verdict_rollup((panels['key-exchange'] or {}).buckets) %}
+{# The rollup only sees the buckets the panel returned, which `limit` may
+   have truncated; `other` is the remainder. Feeding a truncated stack a
+   full-population denominator draws a bar that does not reach its own end
+   and understates every share on it -- the one thing this bar exists not to
+   do. So the shortfall is carried as its own segment. #}
+{% set kexpanel = panels['key-exchange'] or {} %}
+{% set rollup = ch.verdict_rollup(kexpanel.buckets) %}
+{% set truncated = kexpanel.other or 0 %}
 {% set share_of_kex = ch.percent(safe, kex) %}
 {% set share_of_all = ch.percent(safe, docs) %}
 
 <div class="card">
   <h2>Quantum-safe key exchange</h2>
-  {{ ch.ratio_bar(ch.headline_parts(rollup, docs - kex),
+  {{ ch.ratio_bar(ch.headline_parts(rollup, docs - kex + truncated),
        'Every session in the window, split by how its key exchange was assessed; '
-       'the last segment performed none at all.',
+       'the last segment performed none at all, or was left out by the row limit.',
        docs) }}
   <div class="headline">
     <div><div class="v">{{ '{:,}'.format(safe) }}</div>
