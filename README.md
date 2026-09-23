@@ -1,42 +1,94 @@
 [![CodeQL](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/Santandersecurityresearch/CryptoMon/actions/workflows/github-code-scanning/codeql)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-
 # CryptoMon
 
-Network Cryptography Monitor - using eBPF, written in python.
+Network cryptography monitor, in Python and eBPF.
 
-**NB - This code is pre-production and is intended for demonstration purposes.**
+**This code is pre-production and is intended for demonstration purposes.**
 
-This is an demonstration service that allows the interception and analysis of over-the-wire TLS cryptography. 
+CryptoMon answers one question: *what cryptography is actually in use on this
+network, and what fraction of it would survive a quantum computer.* It reads
+TLS and SSH handshakes — off the wire with an eBPF filter, or out of a packet
+capture — works out what each connection negotiated, and reports how much of
+it rests on RSA and elliptic-curve Diffie-Hellman, both of which Shor's
+algorithm breaks.
 
-Cryptomon looks for port 443 traffic, and if found, looks for the 'hello' packets from the client and server. It parses the packet data and then stores it in a MongoDB database that can later be analysed.
+It is the counterpart to the [CodeQL source-code
+analysis](https://github.blog/2023-12-05-addressing-post-quantum-cryptography-with-codeql/)
+we published previously. Static analysis tells you what your code *could*
+negotiate. Traffic tells you what it *did* negotiate, against real servers,
+with real middleboxes in the way, after whatever the deployment turned off.
+The two disagree in both directions, and the disagreement is the interesting
+part.
 
-The advantage of using network monitoring alongside the [CodeQL Source Code analysis](https://github.blog/2023-12-05-addressing-post-quantum-cryptography-with-codeql/) we have worked on previously, is that static analysis of code tells you what could be running, whilst over-the-wire monitoring tells you what is actually being negotiated.
+## What it tells you
 
-## What is supported
+A committed 24-packet fixture, so this is exactly reproducible:
 
-Currently we support the following protocols and captures:
+```console
+$ python -m pcapscan tests/fixtures/streams/tls13_hello_retry.pcap
+pcapscan: read tests/fixtures/streams/tls13_hello_retry.pcap
 
-* TLS Handshake data for all TLS versions, inc. proposed ciphersuites and accepted ciphersuites, across several ports:
-  * 443 (https)
-  * 990 (sftp)
-  * 3389 (rdp)
-  * 8080 (proxy)
-  * 8443 (proxy)
-* TLS Certificates - where they are complete and not affected by TCP fragmentation.
-* SSH Handshakes - including kex, server algos, etc.
+Sessions                1
+  tls                   1
 
-We support a local FastAPI service, as well as logging to file via `TinyDB` or logging to a NoSQL document DB using MongoDB.
+Key exchange
+  performed             1
+  none (resumed)        0
+  post-quantum          0 (0.0%)
+  hybrid                0 (0.0%)
+  classical             1 (100.0%)
+  unknown               0 (0.0%)
+  quantum-safe          0.0% of key exchanges performed
 
-**TODO features** include:
+Post-quantum offers refused by the server (1)
+  X25519Kyber768Draft00 -> secp256r1   x1
+  unreadable (TLS 1.3)  1 sessions
 
-* SSH Key logging option
-* IPv6 support
+TLS versions
+  TLSv1.3               1
 
-## Quick start with Docker
+Algorithms observed
+  ciphersuite    TLS_AES_256_GCM_SHA384               symmetric     1
+  key-exchange   secp256r1                            classical     1
+```
 
-If you have Docker, you need none of the setup below.
+One connection, and the finding this tool exists to produce. The client
+offered a post-quantum hybrid group. The server refused it with a
+HelloRetryRequest and named a classical curve instead, so the traffic that
+followed can be decrypted by anyone who records it and waits for a quantum
+computer. A reader that saw only the first ClientHello would have reported
+"post-quantum key exchange offered" — the opposite of what happened.
+
+Point it at a real capture and you get the same report over thousands of
+connections. Across the twelve corpus captures of everyday desktop
+application traffic, measured with the parsers installed at the time of
+writing: 624 key exchanges performed, 116 of them a post-quantum hybrid
+(18.6%), 508 classical, and 61 post-quantum offers refused by the far end.
+Every certificate key in the corpus is classical.
+
+[docs/reading-a-report.md](docs/reading-a-report.md) explains the rest of it,
+starting with why `15.3%` is quoted *of key exchanges performed* and never on
+its own.
+
+## Which of these are you?
+
+Three ways to run this, and they have almost nothing in common. Read the
+right-hand column and pick the first row that is true of you.
+
+| | You need | Use it when |
+|---|---|---|
+| **[Docker](docs/install.md#docker)** | Docker, and nothing else | You want an answer about a capture file and do not want to install anything. |
+| **[The offline analyser](docs/install.md#the-offline-analyser)** | Python 3.10+, no root, no database | You have captures. This is the whole tool for most people and it sees more than the live sensor does. |
+| **[The live sensor](docs/install.md#the-live-sensor)** | Linux, bcc, kernel headers, root, MongoDB | You want a continuous picture of a network rather than an answer about a file. |
+
+If the live sensor is what you want and `bcc` will not install, that is
+[issue #26](docs/troubleshooting.md#bcc-will-not-install-or-will-not-compile-issue-26),
+and it is the most common way to get stuck here. The offline analyser needs
+none of it and answers the same question about a capture.
+
+### A capture, analysed, with nothing installed
 
 ```bash
 docker build -f docker/Dockerfile.offline -t cryptomon-offline .
@@ -45,323 +97,150 @@ docker run --rm --network none --read-only \
     -v "$PWD:/captures:ro" cryptomon-offline /captures/your-capture.pcap
 ```
 
-That prints what cryptography the handshakes in the capture negotiated: which
-key exchanges would survive a quantum computer, which post-quantum offers the
-server refused, and what is in the certificate chain. The image is 164MB, runs
-as a non-root user with a read-only filesystem and no network at all, and
-contains no database, no eBPF, no kernel headers and nothing from
-`ubuntu-setup.sh`.
+The image runs as a non-root user with a read-only filesystem and no network
+at all, and contains no database, no eBPF and no kernel headers.
+[`docker/README.md`](docker/README.md) covers the other two images — the API
+and the sensor — the compose stack, and the capability list the sensor needs.
 
-For the API, its browser upload UI and the dashboard, with a MongoDB beside it:
+### A capture, analysed, with Python
 
 ```bash
-cd docker
-cp env.example .env          # then put a real password in MONGO_PASSWORD
-docker compose up --build    # http://127.0.0.1:8000/
+pip install cryptography
+python -m pcapscan your-capture.pcap
 ```
 
-Both ports bind `127.0.0.1`. The MongoDB password that ships in
-`docker/compose.yaml` is `change-me-this-is-not-a-password` — a placeholder
-written out in full so it cannot be mistaken for a generated secret.
+No root, no eBPF, no interface, no database, on any platform Python runs on.
+`cryptography` is the only third-party package it uses, and it is used for
+one thing: parsing the X.509 chain. Without it the analyser still runs and
+the certificate section of the report is silently empty — see
+[docs/troubleshooting.md](docs/troubleshooting.md#the-report-has-no-certificates-in-it).
+See [docs/offline-analysis.md](docs/offline-analysis.md) for the output
+formats and the pipelines — NDJSON into MongoDB, CycloneDX CBOM, several
+captures at once, reading from a pipe.
 
-The live eBPF sensor is a third image and an opt-in compose profile, because
-it needs host networking and elevated capabilities. To find out whether eBPF
-works on your machine at all:
+### The service, the dashboard and the upload page
 
 ```bash
-docker build -f docker/Dockerfile.sensor -t cryptomon-sensor .
-docker run --rm --cap-add BPF cryptomon-sensor
-```
-
-```
-OK    compiles
-OK    verifies as SOCKET_FILTER (fd=5)
-OK    verifies as SCHED_CLS (fd=5)
-```
-
-Then `SENSOR_IFACE=eth0 docker compose --profile sensor up`. See
-`docker/README.md` for the capability list, what the host must provide, and
-why `--privileged` is the lazy answer rather than the right one.
-
-## Setup
-
-This installs CryptoMon directly on a host, under Ubuntu 24.04 "Noble
-Numbat". If you would rather not install anything, the containers above do
-all of this and need none of it. 
-
-Firstly, `git clone` this repository. The `ubuntu-setup.sh` script will install all the necessary files. 
-
-If you wish to run this service all the time in the background, run
-`create-service.sh`. It installs two systemd units -- the sensor, which
-needs `CAP_BPF` and a network interface, and the API, which needs
-neither -- and starts neither of them, so that you can read the unit
-files and put the database password in place first. `deploy/README.md`
-walks through that, and through putting the service behind nginx on a
-subpath. 
-
-You will also need to make sure that mongodb is installed and running. Once this is done, you should connect to the instance with `mongosh` and run the following: 
-
-```python
-use cryptomon
-db.createCollection('cryptomon')
-db.createUser({user: "cryptomonUser", pwd: passwordPrompt(), roles: [{ role: "readWrite", db: "cryptomon" }]})
-```
-
-This creates the `cryptomon` collection that the monitor will use to store information, as well as a read/write user for that database - this will prompt you to create a password.
-
-Once this is done you may export these: 
-
-```bash
-export DB_URL="mongodb://cryptomonUser:<password>@<uri>:27017/cryptomon?retryWrites=true&w=majority"
+export DB_URL="mongodb://127.0.0.1:27017/cryptomon"
 export DB_NAME="cryptomon"
+python api.py
 ```
 
-**OR** if you are using MongoDB Atlas or some other cloud service:
+Then `http://127.0.0.1:8000/`. The dashboard is at `/`, the browser upload
+page at `/analyse/`, the JSON rollups at `/stats/` and the raw documents at
+`/data/`. It binds loopback, and writes are refused, until you say
+otherwise. See [docs/service.md](docs/service.md), and
+[deploy/README.md](deploy/README.md) before you put it in front of anybody.
+
+### The live sensor
 
 ```bash
-export DB_URL="mongodb+srv://<Connection URL>/cryptomon?retryWrites=true&w=majority"
-export DB_NAME="cryptomon"
+sudo ./ubuntu-setup.sh      # read it first; see docs/install.md
+sudo python3 ./cryptomon.py -i eth0
 ```
 
-The `fapi/config/__init__.py` should pick these settings up. If, for whatever reason, these environment variables are not picked up, you can edit that file manually.
 
-## Usage
+Linux only. [docs/live-sensor.md](docs/live-sensor.md) covers what it can and
+cannot see, and [deploy/README.md](deploy/README.md) covers running it as a
+service under systemd with nginx in front.
 
-Once everything is installed you can run the monitor and FastAPI with:
+## What it reads
 
-```bash
-sudo python3 ./cryptomon.py -i <iface> &
-python3 ./api.py
-```
+TLS handshakes of every version, on any TCP port for the offline analyser and
+on a [configurable list](docs/configuration.md#which-ports-the-sensor-watches)
+for the live sensor: the versions and ciphersuites proposed and selected, the
+key exchange group, the server name, ALPN, PSK modes, Encrypted ClientHello,
+JA4/JA4S fingerprints, plaintext alerts and the direction they came from, and
+X.509 certificate chains where the handshake is not encrypted. SSH KEXINIT
+algorithm lists, banners, and host key type and size — though there is no SSH
+traffic in this project's capture corpus, so that half is checked against
+constructed fixtures and real OpenSSH-encoded keys rather than against
+captured sessions.
 
-Where `<iface>` should be replaced with the network interface to be monitored (`enp0s1` by default.)
+The offline analyser also reads what arrives over **UDP** — 30,530 datagrams,
+19% of the corpus, used to be dropped at the framing layer and now reach a
+dispatcher — and unwraps **mirrored and tunnelled traffic** (GRE, ERSPAN,
+VXLAN, GENEVE, IP-in-IP) before it frames anything, so a capture taken off a
+switch's mirror port reports what it carries. The individual UDP protocol
+handlers are landing as this is written; see
+[docs/offline-analysis.md](docs/offline-analysis.md#mirrored-and-tunnelled-traffic).
+Neither applies to the live sensor, whose kernel filter reads TCP and nothing
+else.
 
-If you have installed `cryptomon` as a service, then you do not need to run the first line. To check the monitor is working you can run `db.cryptomon.count({})` from `mongosh` to see if the record count is increasing. 
+## What it does not read
 
-## PCAP Files
+Being clear about this is more useful than a feature list.
 
-```bash
-python3 -m pcapscan test.pcap
-```
+* **Anything inside a TLS 1.3 encrypted flight.** The certificate in TLS 1.3
+  travels under the handshake keys. CryptoMon records `certificates_unreadable`
+  for those sessions rather than reporting no certificate, because "not
+  readable" and "not sent" are different claims.
+* **DTLS.** No support, in either path.
+* **Encrypted traffic.** There is no decryption anywhere in this project. It
+  reads the parts of a handshake that are, by design, in the clear.
+* **The inner name of an accepted ECH connection.** When a server accepts
+  Encrypted ClientHello the server name on the wire is a public outer name.
+  The record says `ech: offered` or `ech: accepted` so that the hostname
+  carries its own caveat.
 
-`pcapscan` reads the capture directly. It needs no root, no eBPF, no
-interface and no database, and it runs on any platform Python does.
+## Documentation
 
-It also sees considerably more than the live monitor can. The eBPF path
-receives one packet at a time, so it can only read a handshake that starts at
-the beginning of a TCP payload and finishes inside the same packet. `pcapscan`
-reassembles the stream first, which means:
+| | |
+|---|---|
+| [docs/install.md](docs/install.md) | The three install paths, honestly, including what `ubuntu-setup.sh` actually does |
+| [docs/configuration.md](docs/configuration.md) | Every setting, its default, its effect, and when to change it |
+| [docs/offline-analysis.md](docs/offline-analysis.md) | `python -m pcapscan`: formats, flags, pipelines |
+| [docs/service.md](docs/service.md) | The API, the dashboard, the upload page and `/stats` |
+| [docs/live-sensor.md](docs/live-sensor.md) | The eBPF sensor: what it sees and what it costs |
+| [docs/reading-a-report.md](docs/reading-a-report.md) | What `X25519MLKEM768`, `hybrid`, `t13d1516h2_…`, `resumed` and `ech: offered` mean |
+| [docs/architecture.md](docs/architecture.md) | Why there are two parsing paths, and what each one can see |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | The things that go wrong, and what they look like |
+| [deploy/README.md](deploy/README.md) | nginx, systemd, subpath mounting, hardening |
+| [docker/README.md](docker/README.md) | The three images, capabilities, compose |
+| [tests/README.md](tests/README.md) | How the test suite is built and why |
 
-* **Whole ClientHellos.** A modern hello with post-quantum key shares is
-  around 1.9KB and arrives in two segments; the live path reads the first one
-  and records whichever extensions happened to fit.
-* **Whole certificate chains**, including intermediates. A chain is several
-  kilobytes and has never once fitted in a single packet.
-* **Both halves of a HelloRetryRequest**, so a post-quantum key exchange that
-  the *server refused* is reported as refused rather than as offered.
+## One number, two denominators
 
-Measured against `tshark` over the project's capture corpus, the two agree
-exactly on 441 ClientHellos and 93 certificate messages.
+The headline this tool produces is a percentage, and a percentage here is
+meaningless without the base it is taken over. Across the project's twelve
+capture corpus, 81 key exchanges used a post-quantum hybrid group. That is
+**14.4% of the 564 sessions that performed a key exchange**, and **6.4% of
+the 1260 TLS sessions**, because a resumed session performs no key exchange
+at all and 696 of those 1260 performed none. Both numbers are true, they are
+not the same claim, and which one is right depends on the question.
 
-### Output formats
+The base has to be named, not assumed, and that is not a stylistic
+preference — it is load-bearing. The same run also produces a record for
+every cleartext UDP flow it identifies, and on this corpus those outnumber
+the TLS sessions: dividing 116 by *that* total gives a smaller percentage
+that measures nothing at all, because a DNS lookup was never going to
+negotiate a key exchange. Every figure this project prints carries its base
+beside it.
+[docs/reading-a-report.md](docs/reading-a-report.md) explains why that
+matters more than any other idea here.
 
-```bash
-python3 -m pcapscan capture.pcap                      # readable report
-python3 -m pcapscan capture.pcap -f csv -o out.csv    # for a spreadsheet
-python3 -m pcapscan *.pcapng -f ndjson | mongoimport --collection cryptomon
-zcat big.pcap.gz | python3 -m pcapscan - -f json      # from a pipe
-```
+## Software Bill of Materials
 
-pcap and pcapng are both read, gzipped or not, and several captures can be
-given at once and analysed as one body of traffic. The NDJSON records use the
-same document shape the live monitor writes, so they load into the same
-collection without translation.
+We are firm supporters of the SBOM movement, as it is a key building block in
+software security and supply chain risk management. `bom.json` in this
+repository is CryptoMon's own SBOM.
 
-`--no-certificates` skips X.509 parsing; `--stats` writes the reader and
-reassembler counters to stderr; `--max-stream-bytes` raises the per-direction
-reassembly buffer for captures with unusually large certificate chains.
-
-### Replaying over loopback
-
-```bash
-./parse-pcap.sh test.pcap
-```
-
-This replays the capture over the loopback interface for the live eBPF
-monitor to parse, which exercises the same path production uses. It needs
-root and the data environment variables set, and it sees only what a
-single-packet reader can see -- prefer `pcapscan` unless you are specifically
-testing the live path.
-
-## The dashboard
-
-Start the API and open `http://127.0.0.1:8000/`. It answers the question the
-project exists for -- what fraction of this traffic would survive a quantum
-computer -- with the denominator beside it, because 81 hybrid key exchanges
-is 14% of the sessions that performed one and 6% of all sessions, and those
-are different claims about the same estate. Below that: key exchange over
-time by verdict, ciphersuites, TLS versions, certificate keys, JA4 client
-fingerprints, Encrypted ClientHello uptake, and TLS alerts with the direction
-they came from.
-
-The charts are server-rendered inline SVG. There is no JavaScript framework,
-nothing vendored and nothing fetched from a CDN, and the page renders in full
-with JavaScript switched off; the only script is a short polling loop that
-refreshes a panel in place.
-
-**A word on what it shows.** The hosts panel lists server names taken from
-SNI, which is browsing history. The service binds loopback by default and
-that has not changed, but the first thing an exposed deployment serves at `/`
-is a summary of who was talked to -- so put it behind `deploy/nginx/` with an
-`API_KEY` set before exposing it.
-
-The same numbers are available as JSON under `/stats/` for anything that
-would rather have them that way.
-
-## Analysing a capture from the browser
-
-Start the API and open `http://127.0.0.1:8000/analyse/`. Upload a pcap or
-pcapng file and you get the same report `python -m pcapscan` prints, as a
-page: what was negotiated, which key exchanges would survive a quantum
-computer, and which post-quantum offers the server refused.
-
-The capture is read in a bounded subprocess — memory, CPU, wall-clock and
-size are all capped — and **deleted as soon as it has been analysed**. Only
-the report is kept.
-
-| setting | default | |
-|---|---|---|
-| `UPLOADS_ENABLED` | `true` | turn the feature off entirely |
-| `UPLOAD_DIR` | `/tmp/cryptomon-uploads` | where reports are kept |
-| `MAX_UPLOAD_BYTES` | `268435456` | 256 MB, enforced while reading |
-| `ANALYSIS_TIMEOUT_SECONDS` | `120` | wall-clock ceiling for one capture |
-| `REPORT_RETENTION_HOURS` | `24` | reports are swept after this; `0` keeps them |
-| `RETENTION_SWEEP_MINUTES` | `15` | how often the sweep runs |
-| `DATA_RETENTION_HOURS` | `0` | **the live collection**; `0` keeps everything |
-
-The service binds `127.0.0.1` by default, so this is a local tool unless you
-put it behind something. **If you expose it, set `API_KEY`** — uploads then
-require an `X-API-Key` header, because an open upload endpoint is an open
-invitation to spend your CPU and disk.
-
-### What is kept, and for how long
-
-A capture's SNI field is browsing history: it records which hosts a machine
-contacted and when, including every connection that happened to be in flight
-at the time. The report keeps the server names it found.
-
-Uploaded captures are deleted as soon as they are analysed. Reports are
-swept after `REPORT_RETENTION_HOURS`, and the upload form says so *before*
-the file is chosen.
-
-The live MongoDB collection is a separate decision and **does not expire by
-default**: silently discarding a monitoring database would destroy the
-historical series this project exists to build. Set `DATA_RETENTION_HOURS`
-to opt in, which installs a MongoDB TTL index on `expires_at` so the server
-does the deleting whether or not the API is running.
-
-## FastAPI 
-
-To access the FastAPI documentation go to `http://0.0.0.0:8000/docs` to find the documentation for the backend API.
-
-## Example Data
-
-### TLS Capture
-
-A TLS client capture example:
-
-```json
-{
-"_id": "6682cd75393bb4e863fc0c65",
-"eth": {
-    "src": {
-    "ipv4": "192.168.64.5"
-    },
-    "dst": {
-    "ipv4": "3.210.189.242"
-    }
-},
-"tls": {
-    "tls_versions": [
-    "TLSv1.3",
-    "TLSv1.2"
-    ],
-    "ciphersuites": [
-    "TLS_AES_128_GCM_SHA256",
-    "TLS_CHACHA20_POLY1305_SHA256",
-    "TLS_AES_256_GCM_SHA384",
-    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
-    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
-    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
-    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-    "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
-    "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
-    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
-    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
-    "TLS_RSA_WITH_AES_128_GCM_SHA256",
-    "TLS_RSA_WITH_AES_256_GCM_SHA384",
-    "TLS_RSA_WITH_AES_128_CBC_SHA",
-    "TLS_RSA_WITH_AES_256_CBC_SHA"
-    ],
-    "EtM": false,
-    "hostname": "ping.chartbeat.net",
-    "groups": [
-    "x25519",
-    "secp256r1",
-    "secp384r1",
-    "secp521r1",
-    "ffdhe2048",
-    "ffdhe3072"
-    ],
-    "kex_group": "x25519",
-    "sigalgs": [
-    "ecdsa_secp256r1_sha256",
-    "ecdsa_secp384r1_sha384",
-    "ecdsa_secp521r1_sha512",
-    "rsa_pss_rsae_sha256",
-    "rsa_pss_rsae_sha384",
-    "rsa_pss_rsae_sha512",
-    "rsa_pkcs1_sha256",
-    "rsa_pkcs1_sha384",
-    "rsa_pkcs1_sha512",
-    "ecdsa_sha1",
-    "rsa_pkcs1_sha1"
-    ]
-},
-"ptype": "client",
-"ts": 1719848309.166212
-}
-```
-
-A TLS server hello capture example:
-
-```json
-{
-"_id": "6682cd75393bb4e863fc0c66",
-"eth": {
-    "src": {
-    "ipv4": "3.210.189.242"
-    },
-    "dst": {
-    "ipv4": "192.168.64.5"
-    }
-},
-"tls": {
-    "tls_versions": "TLSv1.2",
-    "ciphersuite": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-},
-"ptype": "server",
-"ts": 1719848309.26233
-}
-```
-
-## Software Bill of Materials (SBOM)
-
-We are firm supporters of the SBOM movement, as it's a key building block in software security and software supply chain risk management. A SBOM is a nested inventory, a list of ingredients that make up software components and as such, here's our recipe:
+Two things about it are worth knowing. It records the PyPI package `bcc`,
+which is **not** what the eBPF sensor uses — the sensor uses the
+distribution's `python3-bpfcc`, an unrelated package, as
+[`docker/README.md`](docker/README.md#what-it-installs-for-the-sbom) records.
+And a CBOM produced by this tool from observed traffic
+(`python -m pcapscan capture.pcap -f cbom`) is a different document with a
+different job: it inventories the cryptography on the *network*, not the
+dependencies of *this software*.
 
 ![](img/sbom1.png)
 ![](img/sbom2.png)
 ![](img/sbom3.png)
 ![](img/sbom4.png)
+
+## Licence, citation and security
+
+GPL v3 — see [LICENSE](LICENSE). To cite this work, see
+[CITATION.cff](CITATION.cff). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).

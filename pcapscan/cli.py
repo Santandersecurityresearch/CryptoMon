@@ -21,14 +21,15 @@ and broken.
 """
 import argparse
 import contextlib
+import os
 import sys
 
 from cryptomon.analysis import CLASSICAL, HYBRID, POST_QUANTUM, Summary
-from cryptomon.parsers.framing import decode_frame
 from pcapscan.export import WRITERS, write_csv, write_json, write_ndjson
 from pcapscan.reader import CaptureError, Reader
 from pcapscan.reassembly import Reassembler
-from pcapscan.sessions import SessionBuilder
+from pcapscan.sessions import KEEP_DER, SessionBuilder
+from pcapscan.tunnels import decode_packet
 
 DEFAULT_FORMAT = 'summary'
 
@@ -72,7 +73,7 @@ def build_parser():
     parser.add_argument('-o', '--output', metavar='FILE',
                         help='write here instead of standard output')
     parser.add_argument('--no-certificates', action='store_true',
-                        help='skip X.509 parsing and keep the raw chain')
+                        help='skip X.509 parsing; the raw DER chain is kept')
     parser.add_argument('--max-stream-bytes', type=int, default=None,
                         metavar='N',
                         help='per-direction reassembly buffer (default: 16384; '
@@ -119,12 +120,32 @@ def _records(captures, builder, quiet):
         try:
             with Reader(_source(capture)) as reader:
                 for packet in reader:
-                    frame = decode_frame(packet.data, packet.linktype)
-                    if frame is None:
+                    # Mirrored traffic -- SPAN, RSPAN, ERSPAN, a TAP feeding a
+                    # collector -- arrives wrapped in GRE inside IP, and until this
+                    # stage existed every frame of it was dropped on decode_frame's
+                    # `return None`. The unwrapping happens *before* framing rather
+                    # than inside it: peeling a tunnel does not yield a transport
+                    # header, it yields another whole frame that needs the entire
+                    # link -> network -> transport walk run over it again, and
+                    # putting that recursion inside decode_frame would hand every
+                    # caller -- the live eBPF adapter included -- a recursion it did
+                    # not ask for, with an attacker-chosen depth.
+                    decoded = decode_packet(packet.data, packet.linktype,
+                                            builder.stats)
+                    if decoded is None:
                         builder.stats['frames_undecodable'] += 1
                         continue
+                    if decoded.frame is None:
+                        builder.push_datagram(packet.timestamp, decoded.raw,
+                                              decoded.datagram)
+                        continue
                     builder.stats['frames'] += 1
-                    builder.push(packet.timestamp, packet.data, frame)
+                    # `decoded.raw` rather than `packet.data`: for a tunnelled packet
+                    # the offsets index the *inner* frame, not the one off the wire.
+                    builder.push(packet.timestamp, decoded.raw,
+                                 decoded.frame,
+                                 decoded.tunnel is not None
+                                 and decoded.tunnel.truncated)
                 for name, value in reader.stats.items():
                     # `Counter.update` *adds*, so passing an
                     # already-accumulated total here would compound it on
@@ -224,7 +245,7 @@ def main(argv=None):
             ('max_flows', args.max_flows)) if value})
     # A parser of `None` is the honest way to say "do not look at the
     # certificates"; sessions.py then keeps the DER rather than dropping it.
-    certificate_parser = (lambda _body: []) if args.no_certificates else None
+    certificate_parser = KEEP_DER if args.no_certificates else None
     builder = SessionBuilder(reassembler, certificate_parser)
 
     summary = Summary()
@@ -253,6 +274,17 @@ def main(argv=None):
                     pass
                 writer(summary, stream, source=', '.join(args.captures))
     except BrokenPipeError:                       # `| head`, and nothing more
+        # Catching the write is not enough. CPython flushes stdout again at
+        # interpreter shutdown, after the reader has gone, and that second
+        # flush raises where no `except` can reach it -- so `| head` and
+        # `| mongoimport`, both of which this tool's own README recommends,
+        # printed an "Exception ignored in: <_io.TextIOWrapper ...>" traceback
+        # over an otherwise correct run. Pointing the fd at /dev/null is the
+        # documented way to silence that flush.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
         return EXIT_OK
     except (OSError, CaptureError) as exc:
         print('pcapscan: {0}'.format(exc), file=sys.stderr)

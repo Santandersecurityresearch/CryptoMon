@@ -158,6 +158,31 @@ def _join(values):
     return LIST_SEPARATOR.join(str(v) for v in values)
 
 
+def _protocol_name(record, ssh, tls):
+    """
+    What this row's flow actually carried.
+
+    Not 'tls' by default. The UDP handlers emit records with neither a `tls`
+    nor an `ssh` block -- an unprotected DNS, HSRP or DHCP flow has no
+    ciphersuite to put in one -- and labelling those 'tls' puts a row in the
+    spreadsheet claiming a TLS session that never happened. On the capture
+    corpus that is 1,058 of them.
+    """
+    if ssh:
+        return 'ssh'
+    if record.get('quic'):
+        # A QUIC record carries a full `tls` block -- that is the point, it
+        # *is* TLS 1.3 -- so the test below would answer 'tls' and lose the
+        # transport. The handshake is the same; what carried it is not.
+        return 'quic'
+    if tls:
+        return 'tls'
+    cleartext = record.get('cleartext')
+    if isinstance(cleartext, dict) and cleartext.get('protocol'):
+        return str(cleartext['protocol'])
+    return None
+
+
 def flatten(record):
     """One session record as a flat dict of CSV_COLUMNS."""
     eth = record.get('eth') or {}
@@ -178,7 +203,7 @@ def flatten(record):
         'src_port': src.get('port'),
         'dst': dst.get('ipv4') or dst.get('ipv6'),
         'dst_port': dst.get('port'),
-        'protocol': 'ssh' if ssh else 'tls',
+        'protocol': _protocol_name(record, ssh, tls),
         'hostname': tls.get('hostname'),
         # Next to the hostname, because it is the qualifier on it: once a
         # server accepts ECH the name to its left is the public outer one.
