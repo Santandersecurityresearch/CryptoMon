@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}CryptoMon{% endblock %}</title>
 <style>
-/* No build step, no CDN, no vendored framework. PR-37 will want charts and
-   can vendor uPlot then; a page with a form and a table does not need one,
-   and a dependency added here is a dependency the whole service carries. */
+/* No build step, no CDN, no vendored framework. PR-37's dashboard draws its
+   charts as server-rendered inline SVG for exactly this reason: a dependency
+   added here is a dependency the whole service carries, and ~90KB of
+   minified JavaScript is not reviewable by anybody in this repository. */
 :root {
   --fg: #1a1a1a; --bg: #fcfcfa; --muted: #63635e; --line: #d9d9d4;
   --accent: #7a3e12; --bad: #8a2a1f; --ok: #1f5c34;
@@ -46,6 +47,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
               font-size: .88em; }
 .note { color: var(--muted); font-size: .88rem; }
 </style>
+{% block head %}{% endblock %}
 </head>
 <body>
 <main>

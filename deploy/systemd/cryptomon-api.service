@@ -1,0 +1,271 @@
+# The CryptoMon API and capture-analysis UI.
+#
+# Separate from cryptomon-sensor.service on purpose. The sensor loads eBPF
+# programs and needs kernel privilege to do it; this process serves HTTP,
+# reads MongoDB and forks a parser. They were one unit, running as root, with
+# a database password written into an Environment= line. Splitting them means
+# the half that is reachable from the network is the half with no
+# capabilities at all.
+#
+# Install:
+#   install -D -m0644 deploy/systemd/cryptomon-api.service \
+#       /etc/systemd/system/cryptomon-api.service
+#   install -D -m0600 deploy/systemd/api.env.example /etc/cryptomon/api.env
+#   $EDITOR /etc/cryptomon/api.env
+#   systemctl daemon-reload && systemctl enable --now cryptomon-api
+#
+# create-service.sh does all of that, including creating the user.
+
+[Unit]
+Description=CryptoMon API and capture-analysis UI
+Documentation=https://github.com/Santandersecurityresearch/CryptoMon
+After=network-online.target
+Wants=network-online.target
+
+# Ordering only, not a requirement. The API starts, fails to reach MongoDB
+# and retries; ordering after mongod merely keeps a minute of connection
+# errors out of the journal when both are on this host. Harmless when the
+# database is remote and mongod.service does not exist here.
+After=mongod.service
+
+# Five failed starts in a minute and the unit stops trying. A unit sitting
+# in `failed` is something an operator notices; one restarting every five
+# seconds forever looks from a distance like a service that is running.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# Type=exec, not Type=simple. `simple` considers the service started the
+# moment fork() returns, so `systemctl start` reports success even when the
+# interpreter path is wrong. `exec` waits for execve() to succeed, which
+# turns "wrong path in ExecStart" from a mystery into an error message.
+Type=exec
+
+# A dedicated system account. DynamicUser=yes is the modern alternative and
+# works here -- see deploy/README.md for the drop-in -- but a fixed uid is
+# easier to reason about when UPLOAD_DIR is somewhere an operator chose, and
+# it makes `ls -l` on the report directory mean something.
+User=cryptomon
+Group=cryptomon
+
+WorkingDirectory=/opt/cryptomon
+
+# --------------------------------------------------------------------------
+# Secrets live in a file, not in this unit.
+# --------------------------------------------------------------------------
+# What this replaces is create-service.sh's
+#
+#     Environment="DB_URL=mongodb://cryptomonUser:<password>@<uri>:27017/..."
+#
+# which is wrong in three separate ways: the password sits in a file under
+# /etc/systemd/system that is world-readable by default, `systemctl show
+# cryptomon` prints it to any user, and `systemctl cat` does too.
+#
+# EnvironmentFile is read by PID 1, as root, before the switch to User=
+# above. So /etc/cryptomon/api.env can be 0600 root:root and the service
+# account itself cannot read it -- which also means a compromise of the
+# service does not hand over the file, only the environment it produced.
+#
+# What this does NOT solve, and nobody should claim it does: the value is
+# still in the process environment and root can read it out of
+# /proc/<pid>/environ. It is kept out of `ps` and out of the unit, which is
+# where it was leaking. A password that must never appear in a process
+# environment needs a credential store; see deploy/README.md.
+EnvironmentFile=/etc/cryptomon/api.env
+
+# api.py rather than the uvicorn CLI, because api.py reads HOST and PORT from
+# fapi/config. Putting them on a command line here would create a second
+# place for them to be set and a second place for them to be wrong.
+ExecStart=/opt/cryptomon/.venv/bin/python /opt/cryptomon/api.py
+
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cryptomon-api
+
+# --------------------------------------------------------------------------
+# Where reports live
+# --------------------------------------------------------------------------
+# /var/lib/cryptomon, created 0700 and owned by User= on every start.
+# api.env points UPLOAD_DIR here; read the PrivateTmp comment below for why
+# the /tmp default does not survive this unit.
+StateDirectory=cryptomon
+StateDirectoryMode=0700
+
+# StateDirectory= already makes /var/lib/cryptomon writable under
+# ProtectSystem=strict. If UPLOAD_DIR points somewhere else, name it here or
+# the service gets EROFS -- which surfaces as a 500 on the first upload, not
+# as a startup failure, so it will be found by a user.
+#ReadWritePaths=/srv/cryptomon/uploads
+
+# --------------------------------------------------------------------------
+# Hardening. Every line says what it prevents; nothing here is decorative.
+# --------------------------------------------------------------------------
+
+# Neither this process nor anything it spawns can gain privilege through a
+# setuid binary or file capabilities. It spawns `python -m pcapscan.sandbox`
+# once per upload, so this covers the parser as well as the server.
+NoNewPrivileges=yes
+
+# A private /tmp and /var/tmp: nothing this service leaves in /tmp is visible
+# to other accounts, and nothing another account plants there is visible to
+# it.
+#
+# Consequence worth understanding before copying this. UPLOAD_DIR defaults to
+# /tmp/cryptomon-uploads (fapi/config). Under PrivateTmp that path lives in a
+# mount namespace destroyed when the service stops, so:
+#   * every report disappears on restart, while the upload form goes on
+#     telling the user they are kept for REPORT_RETENTION_HOURS;
+#   * `ls /tmp/cryptomon-uploads` from a shell shows nothing, which looks
+#     like the feature is broken.
+# The answer is NOT to turn PrivateTmp off -- a report is browsing history
+# and /tmp is world-writable -- but to move UPLOAD_DIR, which api.env does:
+# UPLOAD_DIR=/var/lib/cryptomon/uploads, created by StateDirectory= above.
+PrivateTmp=yes
+
+# The entire filesystem hierarchy read-only, except /dev, /proc, /sys and the
+# StateDirectory. A parser that is made to write a file cannot write one --
+# including into the checkout it was started from.
+ProtectSystem=strict
+
+# /home, /root and /run/user are invisible. Note that fapi/app/uploads.py
+# calls expanduser() on UPLOAD_DIR, so a value beginning with `~` cannot work
+# under this directive. Use an absolute path.
+ProtectHome=yes
+
+# /proc/sys, /sys/fs, /proc/sysrq-trigger and friends become read-only. This
+# service does not tune the kernel; the sensor is the one with kernel
+# business and it has its own unit.
+ProtectKernelTunables=yes
+
+# No module load or unload.
+ProtectKernelModules=yes
+
+# The kernel ring buffer is unreadable. dmesg carries addresses and hardware
+# detail that are worth nothing to an HTTP server and something to whoever
+# has just compromised one.
+ProtectKernelLogs=yes
+
+# The cgroup hierarchy is read-only. A process that can write it can lift its
+# own resource limits, including the ones set at the bottom of this file.
+ProtectControlGroups=yes
+
+# The system clock cannot be changed. Retention here is entirely time-based
+# -- REPORT_RETENTION_HOURS, RETENTION_SWEEP_MINUTES and the MongoDB TTL
+# index -- so a service that could move the clock could expire or preserve
+# other people's reports at will.
+ProtectClock=yes
+
+# /proc shows only this service's own processes, and only their pids. That
+# closes the obvious way to read another service's /proc/<pid>/environ --
+# which is exactly where the secret this unit is careful about ends up.
+ProtectProc=invisible
+ProcSubset=pid
+
+# No device nodes beyond the standard pseudo-devices. This process reads
+# files and speaks TCP.
+PrivateDevices=yes
+
+# System V and POSIX IPC objects belonging to the user are removed when the
+# service stops, so nothing is left behind for the next start to inherit.
+RemoveIPC=yes
+
+# It cannot set setuid or setgid bits on files it creates.
+RestrictSUIDSGID=yes
+
+# It cannot create namespaces. That removes the first step of most container
+# escapes and of the privilege-escalation chains that need a user namespace.
+RestrictNamespaces=yes
+
+# No personality(2) switch, so it cannot reach older and less-audited syscall
+# emulation.
+LockPersonality=yes
+
+# What is missing matters more than what is present. AF_INET and AF_INET6
+# reach MongoDB and accept nginx's connection; AF_UNIX reaches journald and a
+# MongoDB unix socket. AF_PACKET and AF_NETLINK are gone, so this process
+# cannot open a raw socket or talk to the kernel's network configuration
+# interfaces. Those are the sensor's privileges, and half the point of
+# splitting these units is that the network-facing half never has them.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# It needs no capability at all. An empty bounding set means it cannot
+# acquire one even if something else on the host would have granted it.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Reports are browsing history. The default 0022 would leave every report
+# world-readable to any account that could reach the directory.
+UMask=0077
+
+# Only the syscalls an ordinary userspace service uses. @system-service
+# already excludes @privileged, @mount, @obsolete, @reboot and @swap.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# EPERM rather than the default SIGSYS kill, so a filtered call shows up as a
+# Python OSError with a traceback naming the call, instead of a service that
+# vanished.
+SystemCallErrorNumber=EPERM
+
+# --------------------------------------------------------------------------
+# DELIBERATELY NOT SET. Read this before adding them from a hardening guide.
+# --------------------------------------------------------------------------
+#   SystemCallFilter=~@resources
+#
+# This appears in almost every systemd hardening guide and on THIS service it
+# would silently disable the upload sandbox.
+#
+# pcapscan/sandbox.py bounds the analysis worker by having the worker call
+# setrlimit() on itself -- RLIMIT_AS and RLIMIT_CPU -- rather than through
+# preexec_fn, for the threading reason documented at the top of that file.
+# setrlimit and prlimit64 are both in systemd's @resources set. And
+# pcapscan.sandbox.apply_limits() is written to survive a limit it cannot
+# set:
+#
+#     except (ValueError, OSError):
+#         continue
+#
+# So with @resources filtered, setrlimit returns EPERM, the exception is
+# swallowed, and every analysis runs with no address-space ceiling and no CPU
+# ceiling. Reports still come out correct. The only symptom is that the
+# protection the upload path is built on is no longer there, and a capture
+# chosen to exhaust memory now exhausts the machine.
+#
+#   MemoryDenyWriteExecute=yes
+#
+# Not set because it has not been verified against this dependency set.
+# CPython alone is fine with it, but the service imports `cryptography` and
+# spawns a worker that imports more, and libffi's closures -- which ctypes
+# uses -- want a writable-then-executable mapping on some builds. Turn it on
+# and confirm an upload still analyses before believing it.
+#
+#   IPAddressDeny=any / IPAddressAllow=localhost
+#
+# Confines the service to loopback entirely: nginx connects in, mongod is
+# reached out. Correct and worth having when MongoDB is on this host, wrong
+# the moment DB_URL points at Atlas or another machine -- and the failure
+# then looks like a database outage rather than a unit setting. Uncomment
+# only if you know where your database is.
+#IPAddressDeny=any
+#IPAddressAllow=localhost
+
+# --------------------------------------------------------------------------
+# Resource ceilings
+# --------------------------------------------------------------------------
+# One upload is one subprocess. 64 is far above what nginx's limit_conn lets
+# through and far below what it takes to make the host unresponsive.
+TasksMax=64
+
+# MemoryMax is resident memory across the whole cgroup, which is a different
+# measurement from the sandbox's 2 GiB RLIMIT_AS (address space, per worker).
+# The measured figure for analysing the entire 253 MB corpus is 63 MB
+# resident, so 4G is roughly sixty times headroom and still stops a leak here
+# rather than letting the kernel's OOM killer choose a victim elsewhere.
+MemoryMax=4G
+
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

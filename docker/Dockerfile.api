@@ -1,0 +1,156 @@
+# CryptoMon's API and upload UI: `python api.py`.
+#
+# Serves /docs (the OpenAPI browser), /data (the query API over the MongoDB
+# collection the sensor writes) and /analyse (upload a capture, get a
+# report). It needs a MongoDB and nothing else -- no eBPF, no kernel
+# headers, no root, no capabilities.
+#
+#   docker build -f docker/Dockerfile.api -t cryptomon-api .
+#   docker run --rm -p 127.0.0.1:8000:8000 \
+#       -e DB_URL=mongodb://user:pass@host:27017/cryptomon \
+#       -e DB_NAME=cryptomon \
+#       cryptomon-api
+#
+# Normally started by docker/compose.yaml, which brings a MongoDB with it.
+#
+# DB_URL and DB_NAME have no default here and are not given one
+# ------------------------------------------------------------
+# fapi.config.DatabaseSettings declares both without a default, so the
+# process refuses to start without them -- a pydantic ValidationError at
+# import, before a socket is opened. That is the contract the systemd unit
+# and create-service.sh already rely on, and inventing an image-level
+# default (`mongodb://mongo:27017`, say) would replace a loud refusal with a
+# connection that hangs against a host that exists only inside one compose
+# project. docker/README.md prints the error and what it means instead.
+
+# ---------------------------------------------------------------------------
+# build: wheels only, in a stage that is thrown away
+# ---------------------------------------------------------------------------
+# Every pin in requirements.txt has a manylinux wheel for both linux/amd64
+# and linux/arm64 at the versions pinned -- checked by building, not assumed
+# -- so no compiler is installed even here. If a future pin needs one, add
+# build-essential to *this* stage: the point of the split is that the thing
+# that is served never contains a C compiler, a linker or pip's cache.
+FROM python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS build
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
+
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9
+
+LABEL org.opencontainers.image.title="CryptoMon API" \
+      org.opencontainers.image.description="Query API and capture-upload UI over the CryptoMon collection." \
+      org.opencontainers.image.source="https://github.com/Santandersecurityresearch/CryptoMon" \
+      org.opencontainers.image.licenses="GPL-3.0-only"
+
+COPY --from=build /install /usr/local
+
+WORKDIR /app
+
+# api.py imports fapi, which imports cryptomon.analysis and pcapscan.sandbox
+# -- the upload UI analyses a capture by re-executing `python -m
+# pcapscan.sandbox --worker` in a child process, so pcapscan has to be here
+# and has to be importable by the same interpreter. cryptomon.py is not
+# copied: the sensor is a different image with different privileges, and
+# this one has no business being able to start it.
+COPY api.py /app/api.py
+COPY fapi/ /app/fapi/
+COPY pcapscan/ /app/pcapscan/
+COPY cryptomon/ /app/cryptomon/
+
+RUN python -m compileall -q /app
+
+# Normalise the modes COPY brought in. `COPY` preserves the source file's
+# permissions, so a contributor whose umask or editor left
+# cryptomon/tls_ciphersuites.csv at 0600 ships an image that builds, starts
+# and then dies on its first import with
+# `PermissionError: /app/cryptomon/tls_ciphersuites.csv` -- because the
+# process is uid 65532 and the file is root-only. Git records the mode as
+# 100644 and only tracks the executable bit, so a fresh clone and CI never
+# reproduce it and the failure only appears for whoever has the odd mode.
+# `a+rX` adds read everywhere and the traverse bit on directories only.
+RUN chmod -R a+rX /app
+
+# --------------------------------------------------------------------------
+# HOST=0.0.0.0, and why that is not the mistake PR-10 fixed
+# --------------------------------------------------------------------------
+# fapi.config.ServerSettings defaults HOST to 127.0.0.1 deliberately. The
+# previous default was 0.0.0.0, and on a host that published an API with
+# unauthenticated POST/PUT/DELETE on every interface the moment it started.
+# The comment in that file says "exposure is opt-in" and it is right.
+#
+# Inside a container, 127.0.0.1 is the container's own loopback and nothing
+# -- including `docker run -p`, which forwards to the container's published
+# interface -- can reach it. Keeping the loopback default here would not
+# make the service private; it would make it unreachable, and the first
+# thing every operator would do is override it, which is a default that
+# teaches people to turn a safety setting off.
+#
+# So the bind address moves out to 0.0.0.0 and the boundary moves to the
+# container's network namespace, which is a stronger boundary than the one
+# it replaces: a container on a compose network is reachable only from that
+# network until somebody writes a `ports:` line, and docker/compose.yaml's
+# `ports:` line binds 127.0.0.1 on the host. The thing that must stay opt-in
+# has stayed opt-in; it is now one layer out.
+#
+# Two consequences an operator has to know, and they are in docker/README.md
+# under "Exposure":
+#   * `-p 8000:8000` (no address) publishes on every host interface, and on
+#     Linux it bypasses the host firewall's INPUT chain. Write
+#     `-p 127.0.0.1:8000:8000` unless you mean it.
+#   * `--network host` puts this back exactly where PR-10 found it. Don't.
+# Set API_KEY before doing either. READ_ONLY defaults to true, so a bare
+# exposure leaks reads rather than writes, but /analyse will still spend
+# your CPU and disk for anyone who can reach it.
+ENV HOST=0.0.0.0 \
+    PORT=8000 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Uploads and reports. The default is /tmp/cryptomon-uploads, which in a
+# container is a directory in the writable layer: it grows with every
+# capture analysed, it is lost when the container is replaced, and the
+# retention sweep in fapi/app/retention.py is then the only thing standing
+# between a busy day and a full disk on the host. A declared volume keeps it
+# out of the image's layers, survives a `docker compose up --force-recreate`
+# so that a report link somebody shared still resolves, and can be pointed
+# at a disk chosen for it.
+#
+# What lands here is browsing history: a report holds the SNI of every
+# connection in the capture. It is swept after REPORT_RETENTION_HOURS (24 by
+# default) whether or not anybody looks at it.
+ENV UPLOAD_DIR=/var/lib/cryptomon/uploads
+RUN mkdir -p /var/lib/cryptomon/uploads && chown -R 65532:65532 /var/lib/cryptomon
+VOLUME ["/var/lib/cryptomon/uploads"]
+
+RUN groupadd --gid 65532 cryptomon \
+ && useradd --uid 65532 --gid 65532 --no-create-home \
+            --home-dir /nonexistent --shell /usr/sbin/nologin cryptomon
+USER 65532:65532
+
+EXPOSE 8000
+
+# Is the ASGI app serving? Deliberately not "is the database up".
+#
+# /docs is rendered by FastAPI itself and touches no collection, so this
+# answers one question and one only. A health check that also probed
+# /data/count would report the container unhealthy whenever MongoDB was the
+# thing that was down, and a restart policy would then restart the one
+# process that was working. Ordering against the database belongs in
+# compose's depends_on, which is where it is.
+#
+# Written in python because this image has no curl and no wget, and adding
+# either to get a health check would put a URL fetcher in a container that
+# is meant to fetch nothing.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/docs', timeout=4).status == 200 else 1)"]
+
+# api.py rather than a uvicorn command line, so that HOST, PORT and
+# DEBUG_MODE are read from fapi.config exactly as they are outside a
+# container, and the lifespan that creates the indexes and starts the
+# retention sweep runs the same way.
+CMD ["python", "api.py"]

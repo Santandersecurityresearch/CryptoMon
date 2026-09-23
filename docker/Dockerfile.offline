@@ -1,0 +1,127 @@
+# CryptoMon's offline analyser: `python -m pcapscan capture.pcap`.
+#
+# Build this one first and run it first. It reads a capture off disk and
+# prints what cryptography the handshakes inside it negotiated. It needs no
+# root, no eBPF, no kernel headers, no database, no network and no listening
+# socket, and nothing in ubuntu-setup.sh applies to it -- which is the point.
+# Issue #26 is a person who cannot get as far as running the tool; for
+# anybody who only wants to know what this tool says about their traffic,
+# this image is the whole answer:
+#
+#   docker build -f docker/Dockerfile.offline -t cryptomon-offline .
+#   docker run --rm --network none --read-only \
+#       -v /path/to/captures:/captures:ro \
+#       cryptomon-offline /captures/example.pcap
+#
+# `--network none` and `--read-only` are in that line because they both work
+# and both should be habits. The analyser opens no socket and writes no file
+# unless you pass `-o`; if a future change to the parsers ever needs either,
+# that command is where it will be noticed.
+#
+# Why `cryptography` is installed although pcapscan runs without it
+# -----------------------------------------------------------------
+# `import pcapscan` needs nothing outside the standard library, and the
+# package docstring says so. What it does not say is what a report is
+# *missing* when the wheel is absent. pcapscan.certificates is its only
+# importer and pcapscan.sessions keeps the raw DER and carries on when the
+# import fails -- silently, because carrying on is the right behaviour for a
+# capture whose certificates were encrypted anyway.
+#
+# Measured here, on this image, over tests/fixtures/streams/tls12_certificate.pcap:
+#
+#   with cryptography          without
+#   -----------------          -------
+#   Certificate keys           (section absent)
+#     RSA-2048         2
+#     quantum-vulnerable 2 of 2
+#   certificate-key  RSA-2048  (row absent)
+#   signature  sha256WithRSA   (row absent)
+#   signature  sha384WithRSA   (row absent)
+#
+# A CBOM whose certificate inventory is empty because a wheel is missing
+# does not read as incomplete, it reads as "this estate has no certificate
+# keys" -- and the certificate chain is most of what an estate wants counted.
+# So the wheel goes in, at the version requirements.txt pins, and the image
+# grows by the measured amount in docker/README.md. `--build-arg
+# CERTIFICATES=0` builds the standard-library-only image for anyone who
+# wants the smaller attack surface and now knows what it costs; the runtime
+# flag `--no-certificates` asks for the same degradation per run.
+
+# Pinned by digest rather than by tag. These digests are OCI image *indexes*
+# covering linux/amd64 and linux/arm64, so the pin fixes the contents without
+# fixing the architecture -- checked with `docker buildx imagetools inspect`
+# rather than assumed. python:3.11-slim at this digest is 3.11.16 on Debian
+# trixie. Bump both stages together.
+FROM python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS build
+
+ARG CERTIFICATES=1
+
+# The version comes out of requirements.txt rather than being written again
+# here, so that the pin has one home. grep rather than `pip install -r` on
+# the whole file: this image wants that one package and none of the API's.
+COPY requirements.txt /tmp/requirements.txt
+RUN mkdir -p /install \
+ && if [ "$CERTIFICATES" = "1" ]; then \
+        grep -E '^cryptography' /tmp/requirements.txt > /tmp/cryptography.txt \
+        && pip install --no-cache-dir --prefix=/install -r /tmp/cryptography.txt; \
+    fi
+
+
+FROM python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9
+
+LABEL org.opencontainers.image.title="CryptoMon offline analyser" \
+      org.opencontainers.image.description="Read TLS and SSH handshakes out of a packet capture and report what cryptography they negotiated." \
+      org.opencontainers.image.source="https://github.com/Santandersecurityresearch/CryptoMon" \
+      org.opencontainers.image.licenses="GPL-3.0-only"
+
+# The wheel's installed files, without pip's cache, pip's index metadata or
+# the wheel itself. A build stage is doing nothing cleverer than that.
+COPY --from=build /install /usr/local
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Only what the analyser imports. pcapscan shares cryptomon.parsers and
+# cryptomon.analysis -- the same byte arithmetic the live monitor uses --
+# and cryptomon/tls_ciphersuites.csv, which is why the whole package is
+# here rather than a hand-picked subset that would rot. api.py, fapi/ and
+# cryptomon.py are absent: this image serves nothing and captures nothing.
+COPY pcapscan/ /app/pcapscan/
+COPY cryptomon/ /app/cryptomon/
+
+# Byte-compile now, because PYTHONDONTWRITEBYTECODE is set and a read-only
+# rootfs could not write a .pyc anyway. Without this the 188-module import
+# is re-parsed from source on every single run.
+RUN python -m compileall -q /app
+
+# Normalise the modes COPY brought in. `COPY` preserves the source file's
+# permissions, so a contributor whose umask or editor left
+# cryptomon/tls_ciphersuites.csv at 0600 ships an image that builds, starts
+# and then dies on its first import with
+# `PermissionError: /app/cryptomon/tls_ciphersuites.csv` -- because the
+# process is uid 65532 and the file is root-only. Git records the mode as
+# 100644 and only tracks the executable bit, so a fresh clone and CI never
+# reproduce it and the failure only appears for whoever has the odd mode.
+# `a+rX` adds read everywhere and the traverse bit on directories only.
+RUN chmod -R a+rX /app
+
+# A fixed numeric id rather than a name the host cannot see. Files an
+# operator bind-mounts have to be readable by *this* uid, so it has to be
+# something they can write down; 65532 is the convention distroless set and
+# is well clear of anything a distribution allocates. Override it with
+# `--user "$(id -u):$(id -g)"` when writing a report back out to a mount.
+#
+# Not `useradd --system`: that reserves an id below SYS_UID_MAX and warns
+# when handed one above it, and the warning is the only thing it would add.
+RUN groupadd --gid 65532 cryptomon \
+ && useradd --uid 65532 --gid 65532 --no-create-home \
+            --home-dir /nonexistent --shell /usr/sbin/nologin cryptomon
+USER 65532:65532
+
+# The capture is the argument, so the image behaves like the command it
+# wraps: every flag in `python -m pcapscan --help` works unchanged, which
+# means the README's examples and the pipelines built on them do too.
+ENTRYPOINT ["python", "-m", "pcapscan"]
+CMD ["--help"]

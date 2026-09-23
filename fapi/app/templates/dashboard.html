@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+{% block title %}CryptoMon — dashboard{% endblock %}
+
+{% block head %}
+<style>
+/* Dashboard-only styling. It lives here rather than in base.html because
+   base.html is shared with the upload and report pages and is owned by the
+   integrator; the only change made there is the {% raw %}{% block head %}{% endraw %} hook this
+   uses. Everything below is built from the custom properties base.html
+   already defines, so the dashboard themes with the rest of the site. */
+:root {
+  /* The verdict hues, and the one place a literal colour appears. They were
+     not picked by eye: the set was run through a colour-vision-deficiency
+     and contrast validator in the order it is stacked and listed in
+     (charts.VERDICT_ORDER), and both modes pass all five checks -- lightness
+     band, chroma floor, adjacent CVD separation, the normal-vision floor and
+     contrast against the page background. Changing one of these, or the
+     order, invalidates that. The dark set is stepped for the dark surface
+     rather than being a flip of the light one, because a flipped palette
+     fails contrast in exactly the mode nobody tests. */
+  --v-post-quantum: #14683c;
+  --v-hybrid:       #bd8a18;
+  --v-classical:    #b32d1d;
+  --v-symmetric:    #4a3fbf;
+  --v-unknown:      #9c5f8f;
+  /* Panels that do not classify get one neutral series colour, so a bar
+     never implies a verdict that was never computed. */
+  --chart-bar: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --v-post-quantum: #189c78;
+    --v-hybrid:       #b5892a;
+    --v-classical:    #c04038;
+    --v-symmetric:    #6f7ee0;
+    --v-unknown:      #cc6c93;
+  }
+}
+
+/* A viewBox scales to its container, so on a phone the labels inside a
+   760-unit chart would shrink to a few physical pixels. The chart keeps a
+   minimum width and its own box scrolls; the page never scrolls sideways,
+   and the table under every chart is the version that always fits. */
+.chart-box { overflow-x: auto; margin: .3rem 0 .7rem; }
+.chart { display: block; width: 100%; height: auto; min-width: 40rem; }
+.chart .lbl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size: 11px; fill: currentColor; }
+.chart .val { font-size: 11px; fill: currentColor; }
+.chart .axis { font-size: 10px; fill: currentColor; fill-opacity: .65; }
+.chart-empty { color: var(--muted); font-size: .9rem; margin: .3rem 0 .7rem;
+               border: 1px dashed var(--line); border-radius: 6px;
+               padding: .8rem 1rem; }
+
+/* Identity is never colour alone: a swatch sits beside the word, in the
+   charts' colour, while the word itself stays in the page's ink. */
+.sw { display: inline-block; width: .72em; height: .72em; border-radius: 2px;
+      margin-right: .4em; background: var(--chart-bar); }
+.sw-post-quantum { background: var(--v-post-quantum); }
+.sw-hybrid       { background: var(--v-hybrid); }
+.sw-classical    { background: var(--v-classical); }
+.sw-symmetric    { background: var(--v-symmetric); }
+.sw-unknown      { background: var(--v-unknown); }
+/* Not a verdict: the documents that performed no key exchange at all. The
+   same colour as an unclassified bar, and the same colour the headline
+   ratio bar gives the same quantity, so the two charts agree. */
+.sw-no-key-exchange { background: var(--chart-bar); }
+
+.legend { display: flex; flex-wrap: wrap; gap: .1rem 1.1rem; margin: .1rem 0 .7rem;
+          font-size: .85rem; color: var(--muted); }
+.legend .li { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.controls { display: flex; flex-wrap: wrap; gap: .9rem; align-items: flex-end; }
+.controls label { display: block; margin: 0 0 .25rem; font-size: .82rem;
+                  color: var(--muted); text-transform: uppercase;
+                  letter-spacing: .04em; }
+.controls select, .controls input[type=text] { font: inherit; padding: .4rem .5rem;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+      border-radius: 6px; max-width: 16rem; }
+.controls button { margin-top: 0; padding: .45rem 1rem; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center;
+           margin-top: .9rem; }
+.toolbar button { margin-top: 0; padding: .3rem .8rem; font-size: .85rem;
+                  background: transparent; color: var(--accent);
+                  border: 1px solid var(--line); }
+.stamp { color: var(--muted); font-size: .82rem;
+         font-variant-numeric: tabular-nums; }
+
+/* base.html gives an h2 2rem of space above it, which is right between
+   sections of prose and wrong as the first thing inside a card. Scoped to
+   this page's own stylesheet, so the upload and report pages are untouched. */
+.card h2:first-child { margin-top: 0; }
+.wrap { word-break: break-all; }
+.nowrap { white-space: nowrap; }
+.headline .v small { font-size: .95rem; color: var(--muted); }
+.denominator { border-left: 3px solid var(--line); padding-left: .9rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+{% import "dashboard_panels.html" as p with context %}
+<h1>CryptoMon</h1>
+<p class="sub">
+  What cryptography the traffic in this collection negotiated, and how much of
+  it a quantum adversary would eventually read.
+  <a href="analyse/">Analyse a capture</a> ·
+  <a href="stats/overview?hours={{ hours }}">the same numbers as JSON</a>
+</p>
+
+{# ------------------------------------------------------------------ #}
+{# Controls. A plain GET form, so the window and the tag are in the URL, #}
+{# the page is linkable, and none of it needs JavaScript.               #}
+{# ------------------------------------------------------------------ #}
+<form class="card controls" method="get" action="">
+  <div>
+    <label for="hours">Window</label>
+    <select id="hours" name="hours">
+      {% for value, label in window_choices %}
+      <option value="{{ value }}"{% if value == hours %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+      {% if hours not in window_choices|map(attribute=0)|list %}
+      <option value="{{ hours }}" selected>Last {{ hours }} hours</option>
+      {% endif %}
+    </select>
+  </div>
+  <div>
+    <label for="tag">Capture tag</label>
+    <select id="tag" name="tag">
+      <option value="">All captures</option>
+      {% for value in overview.tags or [] %}
+      <option value="{{ ch.safe_text(value) }}"{% if value == tag %} selected{% endif %}>{{ ch.safe_text(value) }}</option>
+      {% endfor %}
+      {% if tag and tag not in (overview.tags or []) %}
+      <option value="{{ ch.safe_text(tag) }}" selected>{{ ch.safe_text(tag) }} (not in this window)</option>
+      {% endif %}
+    </select>
+  </div>
+  <div>
+    <label for="limit">Rows per panel</label>
+    <input id="limit" name="limit" type="text" inputmode="numeric" size="4"
+           value="{{ limit }}">
+  </div>
+  <button type="submit">Apply</button>
+</form>
+
+{% if overview._error %}
+<div class="card">
+  <h2>The overview could not be built</h2>
+  <p class="note bad">{{ ch.safe_text(overview._error) }}</p>
+  <p class="note">The individual panels below were attempted anyway.</p>
+</div>
+
+{% elif is_empty %}
+{# ------------------------------------------------------------------ #}
+{# The empty window. This is a first-class case: the most likely first  #}
+{# visit is somebody who has just imported a capture from last year, and #}
+{# a blank page reads as a broken install. `span` is in the contract     #}
+{# exactly so that this branch has something true to say.                #}
+{# ------------------------------------------------------------------ #}
+<div class="card">
+  <h2>No data in this window</h2>
+  <p>
+    Nothing matched
+    {% if hours %}the last {{ hours }} hour{{ '' if hours == 1 else 's' }}{% else %}all of time{% endif %}{% if tag %}
+    for the tag <code>{{ ch.safe_text(tag) }}</code>{% endif %}.
+  </p>
+  {% if span_text %}
+  <p class="denominator">
+    The collection itself is not empty: it runs from
+    <strong>{{ span_text }}</strong>. Nothing in it falls inside the window
+    above.
+  </p>
+  <p>
+    <a href="?hours={{ span_hours }}{% if tag %}&amp;tag={{ tag|urlencode }}{% endif %}&amp;limit={{ limit }}">Widen the window to cover all of it</a>{% if span_hours %} ·
+    <a href="?hours=0{% if tag %}&amp;tag={{ tag|urlencode }}{% endif %}&amp;limit={{ limit }}">or show all time</a>{% endif %}.
+  </p>
+  {% else %}
+  <p class="denominator">
+    The collection is empty — not just this window. Import a capture:
+  </p>
+  <pre class="mono">python -m pcapscan capture.pcap -f ndjson | mongoimport --collection cryptomon</pre>
+  <p class="note">Or <a href="analyse/">upload one through the browser</a>.</p>
+  {% endif %}
+</div>
+
+{% else %}
+{# ------------------------------------------------------------------ #}
+{# 1. Headline. The rule on this page: never a percentage whose base is #}
+{# not on screen. This project's own recorded finding is that the same  #}
+{# 81 hybrid key exchanges are 14.4% or 6.4% depending only on which    #}
+{# denominator is chosen, so both denominators are drawn, in one bar.   #}
+{# ------------------------------------------------------------------ #}
+{% set kex = overview.key_exchanges_performed or 0 %}
+{% set docs = overview.documents or 0 %}
+{% set safe = overview.quantum_safe or 0 %}
+{% set rollup = ch.verdict_rollup((panels['key-exchange'] or {}).buckets) %}
+{% set share_of_kex = ch.percent(safe, kex) %}
+{% set share_of_all = ch.percent(safe, docs) %}
+
+<div class="card">
+  <h2>Quantum-safe key exchange</h2>
+  {{ ch.ratio_bar(ch.headline_parts(rollup, docs - kex),
+       'Every session in the window, split by how its key exchange was assessed; '
+       'the last segment performed none at all.',
+       docs) }}
+  <div class="headline">
+    <div><div class="v">{{ '{:,}'.format(safe) }}</div>
+         <div class="k">quantum-safe key exchanges</div></div>
+    <div><div class="v">{% if share_of_kex is not none %}{{ '%.1f'|format(share_of_kex) }}%{% else %}—{% endif %}
+         <small>of {{ '{:,}'.format(kex) }}</small></div>
+         <div class="k">of key exchanges performed</div></div>
+    <div><div class="v">{% if share_of_all is not none %}{{ '%.1f'|format(share_of_all) }}%{% else %}—{% endif %}
+         <small>of {{ '{:,}'.format(docs) }}</small></div>
+         <div class="k">of all sessions</div></div>
+    <div><div class="v">{{ '{:,}'.format(docs - kex) }}</div>
+         <div class="k">performed no key exchange</div></div>
+  </div>
+  <p class="note denominator">
+    Both percentages above are true and they are not the same number. The
+    {{ '{:,}'.format(docs - kex) }} sessions that performed no key exchange
+    resumed an earlier one; counting them in the denominator understates
+    readiness by the resumption rate, and leaving them out overstates the
+    share of traffic that is actually protected. Which one is the right
+    answer depends on the question, so the base is printed beside every
+    figure on this page and never on its own.
+  </p>
+</div>
+
+<div class="card">
+  <h2>This window</h2>
+  <div class="headline">
+    <div><div class="v">{{ '{:,}'.format(docs) }}</div>
+         <div class="k">sessions</div></div>
+    <div><div class="v">{{ '{:,}'.format(overview.certificates or 0) }}</div>
+         <div class="k">certificates</div></div>
+    <div><div class="v">{{ '{:,}'.format(overview.distinct_hosts or 0) }}</div>
+         <div class="k">distinct server names</div></div>
+    <div><div class="v">{{ '{:,}'.format(overview.distinct_ja4 or 0) }}</div>
+         <div class="k">distinct JA4</div></div>
+    <div><div class="v {{ 'bad' if overview.ech_accepted else '' }}">{{ '{:,}'.format(overview.ech_offered or 0) }}<small> / {{ '{:,}'.format(overview.ech_accepted or 0) }}</small></div>
+         <div class="k">ECH offered / accepted</div></div>
+    <div><div class="v">{{ '{:,}'.format(overview.alerts or 0) }}</div>
+         <div class="k">alerts</div></div>
+  </div>
+  <p class="note">
+    Documents by kind:
+    {% for kind, count in (overview.by_ptype or {}).items() %}<span class="nowrap"><code>{{ ch.safe_text(kind) }}</code> {{ '{:,}'.format(count) }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if not overview.by_ptype %}none{% endif %}.
+    The live capture path writes one document per <em>frame</em>
+    (<code>client</code>/<code>server</code>) and the offline import writes
+    one per <em>session</em>; a panel's numbers only mean what they say for
+    one of the two shapes, which is why this line is here and not buried.
+    {% if span_text %}The whole collection spans {{ span_text }}.{% endif %}
+  </p>
+</div>
+
+{% for name in panel_order %}
+{{ p.card(name, panels[name] or {}) }}
+{% endfor %}
+{% endif %}
+
+{# ------------------------------------------------------------------ #}
+{# Live refresh. Polling, not streaming: no WebSocket, no change        #}
+{# streams, no dependency. The button is `hidden` in the markup and     #}
+{# revealed by the script, so a browser with scripting off is not shown #}
+{# a control that would do nothing. The page above is already complete  #}
+{# without any of this.                                                 #}
+{# ------------------------------------------------------------------ #}
+<div class="toolbar">
+  <button type="button" id="refresh-toggle" hidden aria-pressed="false"></button>
+  <span class="stamp" id="refresh-stamp"></span>
+  <span class="note">Rendered on the server; this page works with JavaScript disabled.</span>
+</div>
+
+<script>
+(function () {
+  var every = {{ refresh_seconds }} * 1000;
+  var button = document.getElementById('refresh-toggle');
+  var stamp = document.getElementById('refresh-stamp');
+  var panels = [].slice.call(document.querySelectorAll('section.panel[data-url]'));
+  if (!button || !panels.length) { return; }
+  var running = true;
+
+  function draw(panel) {
+    fetch(panel.getAttribute('data-url'), {headers: {'Accept': 'text/html'}})
+      .then(function (response) { return response.ok ? response.text() : null; })
+      .then(function (html) { if (html !== null) { panel.innerHTML = html; } })
+      // A poll that failed is not worth shouting about: the panel keeps
+      // showing the last good render, which is more useful than an error.
+      .catch(function () {});
+  }
+
+  function refresh() {
+    // document.hidden: a dashboard left open in a background tab should not
+    // keep running aggregations against somebody's database all week.
+    if (!running || document.hidden) { return; }
+    panels.forEach(draw);
+    stamp.textContent = 'updated ' + new Date().toLocaleTimeString();
+  }
+
+  function setRunning(value) {
+    running = value;
+    button.textContent = running ? 'Pause refresh' : 'Resume refresh';
+    button.setAttribute('aria-pressed', running ? 'false' : 'true');
+    stamp.textContent = running ? stamp.textContent : 'paused';
+  }
+
+  button.hidden = false;
+  button.addEventListener('click', function () {
+    setRunning(!running);
+    if (running) { refresh(); }
+  });
+  setRunning(true);
+  stamp.textContent = 'refreshing every {{ refresh_seconds }}s';
+  setInterval(refresh, every);
+})();
+</script>
+{% endblock %}

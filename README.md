@@ -34,13 +34,70 @@ We support a local FastAPI service, as well as logging to file via `TinyDB` or l
 * SSH Key logging option
 * IPv6 support
 
+## Quick start with Docker
+
+If you have Docker, you need none of the setup below.
+
+```bash
+docker build -f docker/Dockerfile.offline -t cryptomon-offline .
+
+docker run --rm --network none --read-only \
+    -v "$PWD:/captures:ro" cryptomon-offline /captures/your-capture.pcap
+```
+
+That prints what cryptography the handshakes in the capture negotiated: which
+key exchanges would survive a quantum computer, which post-quantum offers the
+server refused, and what is in the certificate chain. The image is 164MB, runs
+as a non-root user with a read-only filesystem and no network at all, and
+contains no database, no eBPF, no kernel headers and nothing from
+`ubuntu-setup.sh`.
+
+For the API, its browser upload UI and the dashboard, with a MongoDB beside it:
+
+```bash
+cd docker
+cp env.example .env          # then put a real password in MONGO_PASSWORD
+docker compose up --build    # http://127.0.0.1:8000/
+```
+
+Both ports bind `127.0.0.1`. The MongoDB password that ships in
+`docker/compose.yaml` is `change-me-this-is-not-a-password` — a placeholder
+written out in full so it cannot be mistaken for a generated secret.
+
+The live eBPF sensor is a third image and an opt-in compose profile, because
+it needs host networking and elevated capabilities. To find out whether eBPF
+works on your machine at all:
+
+```bash
+docker build -f docker/Dockerfile.sensor -t cryptomon-sensor .
+docker run --rm --cap-add BPF cryptomon-sensor
+```
+
+```
+OK    compiles
+OK    verifies as SOCKET_FILTER (fd=5)
+OK    verifies as SCHED_CLS (fd=5)
+```
+
+Then `SENSOR_IFACE=eth0 docker compose --profile sensor up`. See
+`docker/README.md` for the capability list, what the host must provide, and
+why `--privileged` is the lazy answer rather than the right one.
+
 ## Setup
 
-This setup is designed to operate under Ubuntu 24.04 "Noble Numbat". 
+This installs CryptoMon directly on a host, under Ubuntu 24.04 "Noble
+Numbat". If you would rather not install anything, the containers above do
+all of this and need none of it. 
 
 Firstly, `git clone` this repository. The `ubuntu-setup.sh` script will install all the necessary files. 
 
-If you wish to run this service all the time in the background, then you should look at running the `create-service.sh` script that creates a systemd service that continually monitors network traffic in the background. 
+If you wish to run this service all the time in the background, run
+`create-service.sh`. It installs two systemd units -- the sensor, which
+needs `CAP_BPF` and a network interface, and the API, which needs
+neither -- and starts neither of them, so that you can read the unit
+files and put the database password in place first. `deploy/README.md`
+walks through that, and through putting the service behind nginx on a
+subpath. 
 
 You will also need to make sure that mongodb is installed and running. Once this is done, you should connect to the instance with `mongosh` and run the following: 
 
@@ -135,6 +192,31 @@ monitor to parse, which exercises the same path production uses. It needs
 root and the data environment variables set, and it sees only what a
 single-packet reader can see -- prefer `pcapscan` unless you are specifically
 testing the live path.
+
+## The dashboard
+
+Start the API and open `http://127.0.0.1:8000/`. It answers the question the
+project exists for -- what fraction of this traffic would survive a quantum
+computer -- with the denominator beside it, because 81 hybrid key exchanges
+is 14% of the sessions that performed one and 6% of all sessions, and those
+are different claims about the same estate. Below that: key exchange over
+time by verdict, ciphersuites, TLS versions, certificate keys, JA4 client
+fingerprints, Encrypted ClientHello uptake, and TLS alerts with the direction
+they came from.
+
+The charts are server-rendered inline SVG. There is no JavaScript framework,
+nothing vendored and nothing fetched from a CDN, and the page renders in full
+with JavaScript switched off; the only script is a short polling loop that
+refreshes a panel in place.
+
+**A word on what it shows.** The hosts panel lists server names taken from
+SNI, which is browsing history. The service binds loopback by default and
+that has not changed, but the first thing an exposed deployment serves at `/`
+is a summary of who was talked to -- so put it behind `deploy/nginx/` with an
+`API_KEY` set before exposing it.
+
+The same numbers are available as JSON under `/stats/` for anything that
+would rather have them that way.
 
 ## Analysing a capture from the browser
 

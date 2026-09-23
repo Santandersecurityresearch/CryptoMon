@@ -1,0 +1,210 @@
+{#
+  One macro per shape of panel, imported `with context` by dashboard.html
+  (the whole page) and dashboard_fragment.html (one panel, for the refresh
+  loop). Both render identical markup, which is the point: what JavaScript
+  drops into the page is what the server would have drawn anyway, so the
+  page with scripting disabled and the page after a refresh cannot drift
+  apart.
+
+  `ch` is fapi.app.charts. Every string that came out of the database goes
+  through ch.safe_text() rather than relying on Jinja's autoescape alone:
+  autoescape handles the angle brackets, and safe_text additionally escapes
+  the NUL and the carriage return that this project already had to add
+  printable_text() for after a mutated SNI broke the CSV writer.
+
+  Anything that needs more than a conditional is a pure function in
+  charts.py, not a chain of Jinja filters -- because that is the half of
+  this PR that has tests.
+#}
+
+{#
+  A swatch and the word beside it. Never the word on its own in a colour:
+  identity has to survive a reader who cannot tell the colours apart, and
+  the timeline's sixth band -- "no key exchange" -- is not a verdict at all.
+  The class comes from ch.band_class() rather than from string-mangling the
+  name here, because a band name with a space in it is not a class name.
+#}
+{% macro swatch(band) -%}
+<span class="sw {{ ch.band_class(band) }}" aria-hidden="true"></span>{{ ch.safe_text(band) }}
+{%- endmacro %}
+
+{% macro notes(data) -%}
+{% for note in data.notes or [] %}<p class="note">{{ ch.safe_text(note) }}</p>{% endfor %}
+{%- if data.other %}
+<p class="note">{{ '{:,}'.format(data.other) }} more were left out by the limit
+  of {{ limit }}.
+  <a href="?hours={{ hours }}{% if tag %}&amp;tag={{ tag|urlencode }}{% endif %}&amp;limit=200">Show up to 200</a>.</p>
+{%- endif %}
+{%- endmacro %}
+
+{#
+  The table under every chart. It is not a fallback. It is where the
+  untruncated name lives, where a screen reader gets the numbers, and where
+  a count that is a three-pixel stub in the chart is still legible.
+#}
+{% macro table(data, head, noun) -%}
+{% set rows = data.buckets or [] %}
+{% set verdicts = ch.has_verdict(rows) %}
+{% set directions = rows | selectattr('direction') | list | length > 0 %}
+<table>
+  <tr><th>{{ head }}</th>{% if verdicts %}<th>Assessment</th>{% endif %}{% if directions %}<th>Sent by</th>{% endif %}<th class="n">{{ noun }}</th></tr>
+  {% for bucket in rows %}
+  <tr><td class="mono wrap">{{ ch.safe_text(bucket.name) }}</td>
+      {% if verdicts %}<td class="nowrap">{{ swatch(bucket.verdict) }}</td>{% endif %}
+      {% if directions %}<td>{{ ch.safe_text(bucket.direction) }}</td>{% endif %}
+      <td class="n">{{ '{:,}'.format(bucket.count) }}</td></tr>
+  {% endfor %}
+  {% if not rows %}
+  <tr><td colspan="4" class="note">Nothing in this window.</td></tr>
+  {% endif %}
+</table>
+{%- endmacro %}
+
+{% macro legend(pairs) -%}
+<p class="legend">{% for verdict, count in pairs %}<span class="li">{{ swatch(verdict) }} {{ '{:,}'.format(count) }}</span>{% endfor %}</p>
+{%- endmacro %}
+
+{#
+  The body of one panel: heading, chart, legend, prose, table, notes. The
+  refresh loop replaces exactly this, so the heading is inside it.
+#}
+{% macro body(name, data) -%}
+<h2>{{ titles.get(name, name) }}</h2>
+
+{% if data._error %}
+<p class="note bad">This panel could not be built: {{ ch.safe_text(data._error) }}</p>
+<p class="note">The rest of the page is unaffected — a panel that fails is
+  one aggregation failing, not the dashboard.</p>
+
+{% elif name == 'timeline' %}
+{% set totals = ch.timeline_totals(data.series) %}
+{{ ch.timeline_chart(data.series, data.bucket_seconds,
+     'Key exchanges by assessment over time, drawn against the total sessions in each bucket.') }}
+{% if totals %}{{ legend(totals) }}{% endif %}
+<p class="note">
+  Each column is every document in that bucket, stacked by how its key
+  exchange was assessed, best-prepared at the baseline. The top band is the
+  documents that performed <em>no</em> key exchange — a resumed or
+  incomplete session — so the column height is the denominator and the
+  dashed line traces it. Buckets are
+  {{ '{:,}'.format(data.bucket_seconds or 0) }} seconds wide and gap-filled,
+  so a flat zero is an outage rather than a missing point. Times are this
+  server's local time.
+</p>
+{{ notes(data) }}
+
+{% elif name == 'ech' %}
+{% set offered = ch.bucket_count(data.buckets, 'offered', 'ech offered') %}
+{% set accepted = ch.bucket_count(data.buckets, 'accepted', 'ech accepted') %}
+{% set share = ch.percent(offered, data.total) %}
+{{ ch.bar_chart(data.buckets, 'Encrypted ClientHello: offered, and accepted.') }}
+<p class="note">
+  {% if share is not none %}{{ '{:,}'.format(offered) }} of
+  {{ '{:,}'.format(data.total) }} sessions ({{ '%.1f'|format(share) }}%)
+  offered Encrypted ClientHello, and {{ '{:,}'.format(accepted) }} had it
+  accepted.{% else %}No sessions in this window.{% endif %}
+</p>
+<p class="note{{ ' bad' if accepted }}">
+  While no server accepts it, the server names elsewhere on this page are the
+  real destinations. The first time this figure is not zero,
+  <code>tls.hostname</code> becomes the public outer name and the true
+  destination stops being readable from a capture at all — which is why this
+  panel is here rather than at the bottom.
+</p>
+{{ table(data, 'State', 'Sessions') }}
+{{ notes(data) }}
+
+{% else %}
+{% set rows = data.buckets or [] %}
+{% set rollup = ch.verdict_rollup(rows) %}
+{#
+  "from N documents", not "over N records". `total` is the document count
+  even on the panels that $unwind a list field, where the buckets sum to
+  occurrences instead -- so the two numbers differ and the caption has to
+  say which one it is naming. The occurrence count is in `notes`.
+#}
+{{ ch.bar_chart(rows, titles.get(name, name) ~ ': ' ~ (rows|length) ~ ' distinct values from ' ~ '{:,}'.format(data.total or 0) ~ ' documents.') }}
+{% if rollup %}{{ legend(rollup) }}{% endif %}
+
+{% if name == 'certificates' %}
+{# Counted rather than assumed. An earlier draft of this said "every
+   certificate is classical" whenever none was quantum-safe, and rendered
+   that over a corpus where 23 of 183 were in fact *unclassified* -- which
+   is a different and weaker claim. Say which. #}
+{% set total_certs = rollup | map(attribute=1) | sum %}
+{% set safe_certs = rollup | selectattr(0, 'in', ['post-quantum', 'hybrid']) | map(attribute=1) | sum %}
+{% set classical_certs = rollup | selectattr(0, 'equalto', 'classical') | map(attribute=1) | sum %}
+{% if total_certs and not safe_certs %}
+<p class="note bad">
+  <strong>Not one certificate in this window is quantum-safe.</strong>
+  {{ '{:,} of {:,} are classical'.format(classical_certs, total_certs) }}{% if total_certs - classical_certs %}, and {{ '{:,} could not be classified'.format(total_certs - classical_certs) }} from what the capture contained{% endif %}. A key exchange can
+  be made quantum-safe by enabling a hybrid group on two endpoints; a
+  certificate cannot, because every issuer above it has to change first.
+  This is the number with the longest lead time on it.
+</p>
+{% endif %}
+{% endif %}
+
+{% if name == 'alerts' %}
+{% set directed = ch.has_direction(rows) %}
+<p class="note">
+  The direction is part of the finding, not a detail: without knowing which
+  end sent it, "a middlebox refused our key share" and "we refused their
+  parameters" are the same row. A <code>handshake_failure</code> from the
+  server and a <code>certificate_unknown</code> from the client are two
+  different problems with two different owners.
+</p>
+{% if not directed %}
+<p class="note bad">
+  This panel's buckets carry no direction. It is in the stored records —
+  <code>tls.alerts[].from_client</code> — but the aggregation is not
+  reporting it, so these counts merge both ends. See the panel's notes.
+</p>
+{% endif %}
+{% endif %}
+
+{% if name == 'ja4' %}
+<p class="note">
+  JA4 is what makes a row legible as "Chrome" rather than as an address: it
+  fingerprints how a client offered to negotiate, not who it connected to.
+  It is deliberately coarser than JA3, so a handful of large buckets here is
+  the fingerprint working rather than the parser failing — many clients of
+  the same build share one JA4. The exact counts are above; they are
+  whatever this window contains.
+</p>
+{% endif %}
+
+{% if name == 'hosts' %}
+<p class="note">
+  These are server names read out of the TLS handshake. That is browsing
+  history: treat this page the way you would treat the capture it came from.
+</p>
+{% endif %}
+
+{{ table(data,
+         'Group' if name == 'key-exchange' else
+         'Suite' if name == 'ciphersuites' else
+         'Version' if name == 'tls-versions' else
+         'Key' if name == 'certificates' else
+         'Fingerprint' if name == 'ja4' else
+         'Server name' if name == 'hosts' else
+         'Alert' if name == 'alerts' else 'Name',
+         'Certificates' if name == 'certificates' else
+         'Alerts' if name == 'alerts' else 'Sessions') }}
+{{ notes(data) }}
+{% endif %}
+{%- endmacro %}
+
+{#
+  data-url is *relative*. url_for() hands back an absolute URL carrying the
+  scheme and host Starlette inferred, which is the wrong host the moment
+  this sits behind the nginx the README recommends. A relative "panels/x"
+  resolves against whatever prefix the router was mounted under, including
+  none.
+#}
+{% macro card(name, data) -%}
+<section class="card panel" id="panel-{{ name }}" data-panel="{{ name }}"
+         data-url="panels/{{ name }}?hours={{ hours }}&amp;limit={{ limit }}{% if tag %}&amp;tag={{ tag|urlencode }}{% endif %}{% if bucket %}&amp;bucket={{ bucket }}{% endif %}">
+{{ body(name, data) }}
+</section>
+{%- endmacro %}

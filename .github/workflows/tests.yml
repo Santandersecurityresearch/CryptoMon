@@ -124,3 +124,61 @@ jobs:
         run: |
           docker run --rm --privileged -v "$PWD":/work -w /work \
             cryptomon-bpf python3 tests/tools/check_bpf_behaviour.py
+
+  images:
+    name: the container images build and run
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the offline analyser reads a capture
+        # The image most people will use, and the only one that needs
+        # nothing from the host: no root, no bcc, no database, no network.
+        # Asserting on the certificate section rather than on the exit code,
+        # because the one third-party package in the image is what produces
+        # it and a silently empty certificate inventory is the failure worth
+        # catching.
+        run: |
+          docker build -f docker/Dockerfile.offline -t cryptomon-offline .
+          docker run --rm --network none --read-only \
+            -v "$PWD/tests/fixtures/streams:/captures:ro" \
+            cryptomon-offline /captures/tls12_certificate.pcap | tee /tmp/report
+          grep -q 'Certificate keys' /tmp/report
+          grep -q 'RSA-2048' /tmp/report
+
+      - name: the api image starts and serves
+        # Against a throwaway MongoDB, because the point is that the image
+        # starts and answers -- not that the query layer works, which the
+        # pytest suite covers without a container.
+        run: |
+          docker build -f docker/Dockerfile.api -t cryptomon-api .
+          docker network create cryptomon-ci
+          docker run -d --name mongo --network cryptomon-ci mongo:7.0
+          docker run -d --name api --network cryptomon-ci \
+            -p 127.0.0.1:8000:8000 \
+            --read-only --tmpfs /tmp:size=64m --cap-drop ALL \
+            -e DB_URL=mongodb://mongo:27017 -e DB_NAME=cryptomon \
+            cryptomon-api
+          for _ in $(seq 30); do
+            curl -fsS http://127.0.0.1:8000/docs >/dev/null && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/docs >/dev/null
+          curl -fsS http://127.0.0.1:8000/data/count
+          docker rm -f api mongo
+
+      - name: the sensor image loads the program it ships
+        # The bpf job above checks the C in a purpose-built test image.
+        # This checks it in the image an operator will actually run, with
+        # the capabilities docker/README.md tells them to grant and no
+        # more -- so a change to the sensor image that breaks bcc, the
+        # kernel headers or the entrypoint's BCC_KERNEL_SOURCE fallback
+        # fails here rather than in somebody's deployment.
+        run: |
+          docker build -f docker/Dockerfile.sensor -t cryptomon-sensor .
+          docker run --rm --cap-add BPF cryptomon-sensor
+          docker run --rm --cap-drop ALL \
+            --cap-add BPF --cap-add PERFMON --cap-add NET_RAW \
+            -v "$PWD":/work -w /work cryptomon-sensor \
+            python3 tests/tools/check_bpf_behaviour.py
