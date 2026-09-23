@@ -1,0 +1,203 @@
+# The CryptoMon eBPF sensor.
+#
+# This is the half that needs kernel privilege: it compiles a BPF program
+# with bcc at startup, attaches it to an interface, and reads handshakes off
+# the wire. It writes to MongoDB and serves nothing.
+#
+# It is a separate unit from cryptomon-api.service precisely because of that.
+# Anything reachable from the network belongs in the unit with no
+# capabilities; anything with CAP_BPF belongs in a unit nothing can reach.
+#
+# Install:
+#   install -D -m0644 deploy/systemd/cryptomon-sensor.service \
+#       /etc/systemd/system/cryptomon-sensor.service
+#   install -D -m0600 deploy/systemd/sensor.env.example \
+#       /etc/cryptomon/sensor.env
+#   $EDITOR /etc/cryptomon/sensor.env       # CRYPTOMON_IFACE is required
+#   systemctl daemon-reload && systemctl enable --now cryptomon-sensor
+
+[Unit]
+Description=CryptoMon eBPF TLS sensor
+Documentation=https://github.com/Santandersecurityresearch/CryptoMon
+After=network-online.target
+Wants=network-online.target
+After=mongod.service
+
+# The interface has to exist before the sensor attaches to anything. If yours
+# appears late -- a USB adapter, a bridge brought up by a later unit -- add
+# the device unit, with systemd's escaping: a dash in the interface name
+# becomes \x2d.
+#
+#   After=sys-subsystem-net-devices-enp0s1.device
+#   BindsTo=sys-subsystem-net-devices-enp0s1.device
+
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=exec
+
+# Root. bcc compiles the BPF C source with clang at runtime and loads it,
+# and on most distribution kernels that still wants CAP_SYS_ADMIN rather
+# than the split CAP_BPF/CAP_PERFMON alone. See CapabilityBoundingSet below
+# for how far this can be narrowed and on which kernels.
+User=root
+Group=root
+
+WorkingDirectory=/opt/cryptomon
+
+# A separate environment file from the API's, not a shared one. The sensor
+# needs DB_URL and DB_NAME; it has no use for API_KEY, and a process running
+# with CAP_BPF should not be holding the credential that guards the HTTP
+# side. 0600 root:root; see the long comment in cryptomon-api.service for
+# what EnvironmentFile does and does not protect.
+EnvironmentFile=/etc/cryptomon/sensor.env
+
+# CRYPTOMON_IFACE is not optional, and the failure if it is missing is
+# unpleasant: cryptomon.py's parse_argz() falls back to calling input() when
+# no -i is given, which under systemd has no terminal, raises EOFError and
+# kills the service on every start. Set it in sensor.env.
+#
+# ${VAR} rather than $VAR: the braced form does not word-split, so an
+# interface name is passed as exactly one argument.
+ExecStart=/opt/cryptomon/.venv/bin/python /opt/cryptomon/cryptomon.py -i ${CRYPTOMON_IFACE}
+
+# Add -tc for a SPAN/TAP port, where the traffic-control path is wanted
+# instead of the socket-filter one:
+#ExecStart=/opt/cryptomon/.venv/bin/python /opt/cryptomon/cryptomon.py -i ${CRYPTOMON_IFACE} -tc
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cryptomon-sensor
+
+# --------------------------------------------------------------------------
+# Hardening, for a process that genuinely needs kernel privilege
+# --------------------------------------------------------------------------
+# Much less can be taken away here than from the API, and the honest thing is
+# to say which lines are load-bearing and which are a judgement call. Where a
+# directive would break bcc, it is listed with the reason rather than
+# quietly omitted.
+
+# Still worth setting even as root: it stops anything this process spawns
+# from picking up privilege it was not given, and it is what makes the
+# syscall filter below apply to children.
+NoNewPrivileges=yes
+
+# Only the capabilities the sensor actually uses, so that a compromise of the
+# BPF loader is not a compromise of everything root can do:
+#
+#   CAP_BPF          bpf(2): create maps, load programs. Split out of
+#                    CAP_SYS_ADMIN in Linux 5.8.
+#   CAP_PERFMON      perf_event_open(2), which is how bcc attaches to
+#                    kprobes and tracepoints. Also 5.8.
+#   CAP_NET_ADMIN    attaching a program to an interface, and the traffic
+#                    control path used by -tc.
+#   CAP_NET_RAW      raw sockets -- the socket-filter attach mode, and
+#                    scapy's sendp() when a pcap is replayed.
+#   CAP_SYS_RESOURCE RLIMIT_MEMLOCK. BPF maps were charged against locked
+#                    memory before Linux 5.11; see LimitMEMLOCK below.
+#   CAP_SYS_ADMIN    bcc. On a kernel older than 5.8 there is no CAP_BPF and
+#                    this is the only way to call bpf(2) at all; on newer
+#                    kernels bcc still reaches for it in several places
+#                    (reading kallsyms, some attach paths, debugfs). Try
+#                    removing it once the sensor is known to work, and
+#                    expect to put it back.
+#   CAP_DAC_OVERRIDE debugfs under /sys/kernel/debug is 0700 root on most
+#                    distributions. Needed only if you narrow User= away
+#                    from root, which is not the default here.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+
+# BPF maps are charged against RLIMIT_MEMLOCK on kernels before 5.11, and the
+# default 64 KiB is not enough for a map of any size. The symptom is map
+# creation failing with EPERM or ENOMEM at startup, which reads like a
+# permission problem and is not one.
+LimitMEMLOCK=infinity
+
+# Read-only filesystem, with the exceptions the next comment explains.
+ProtectSystem=strict
+
+# No access to /home, /root or /run/user. The sensor reads packets and writes
+# to a database; it has no business in anybody's files.
+ProtectHome=yes
+
+# A private /tmp. bcc writes intermediate files while compiling, and giving
+# it a namespace of its own keeps those out of a shared /tmp -- where, on a
+# machine with other users, a symlink placed in advance is the classic way to
+# turn a root process's temporary file into a root-owned file somewhere else.
+PrivateTmp=yes
+
+# NOT SET, and this is the important one for the sensor:
+#
+#   ProtectKernelTunables=yes
+#
+# It remounts /proc/sys and /sys/kernel/debug read-only. bcc attaches probes
+# by writing to /sys/kernel/debug/tracing, so with this set the sensor loads
+# its program and then fails to attach it -- the service starts, stays
+# running, and captures nothing. A monitoring tool that is silently
+# monitoring nothing is the worst failure available here, which is why this
+# is written out rather than left off the list.
+
+# Modules are a different matter: bcc loads BPF programs, not kernel modules,
+# and nothing here should be calling init_module(2).
+ProtectKernelModules=yes
+
+# The cgroup hierarchy stays read-only. The sensor does not attach cgroup-bpf
+# programs.
+ProtectControlGroups=yes
+
+# Time-stamping every session is the whole point of the data series this
+# writes into. A process that could move the clock could rewrite the
+# timeline.
+ProtectClock=yes
+
+# AF_NETLINK and AF_PACKET are here because the sensor needs them and the API
+# unit is careful not to have them: netlink for the traffic-control attach
+# path (pyroute2) and for interface enumeration, packet sockets for the
+# socket-filter attach mode and for scapy's replay. AF_INET/AF_INET6 reach
+# MongoDB; AF_UNIX reaches journald.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
+
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Not RestrictNamespaces=yes: some bcc attach paths and any future
+# per-namespace probing need it, and a sensor that cannot see a container's
+# network namespace is a sensor with a blind spot exactly where TLS is
+# interesting. Narrow it if you are sure.
+
+# NOT SET:
+#
+#   MemoryDenyWriteExecute=yes
+#
+# bcc compiles BPF C with LLVM in this process. That is a JIT, it needs
+# writable-then-executable memory, and this directive would make the sensor
+# fail at the first program load. It is correct for the API unit and wrong
+# here, which is a good illustration of why a hardening block should not be
+# copied between two services because they share a name.
+
+# A syscall filter that permits what BPF work needs. @system-service excludes
+# @privileged, and bpf(2) and perf_event_open(2) are both in @privileged --
+# so they have to be named explicitly or the sensor cannot load a program at
+# all.
+#
+# NOT VERIFIED on a running kernel by the author of this file (written on
+# macOS; see deploy/README.md). If the sensor dies at startup with EPERM from
+# an unexpected call, run `journalctl -u cryptomon-sensor` with
+# SystemCallLog=@privileged temporarily set, and add what it names.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service bpf perf_event_open
+SystemCallErrorNumber=EPERM
+
+UMask=0077
+
+# TinyDB file logging, if you use it instead of MongoDB, needs somewhere to
+# write. Uncomment both lines and point the TinyDB path at
+# /var/lib/cryptomon-sensor.
+#StateDirectory=cryptomon-sensor
+#StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

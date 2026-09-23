@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}CryptoMon — dashboard unavailable{% endblock %}
+{% block content %}
+{#
+  503, with a sentence. This is what a deployment without fapi/app/stats.py
+  gets, and it is deliberately a page rather than a stack trace: "the stats
+  endpoints are not available on this deployment" sends a reader to the
+  right place, and an internal server error sends them looking for a crash
+  that has not happened. UPLOADS_ENABLED already establishes that a feature
+  of this service can simply be absent.
+#}
+<h1>Dashboard unavailable</h1>
+<p class="sub">
+  The statistics aggregations are not installed on this deployment.
+</p>
+
+<div class="card">
+  <p>
+    This page reads its numbers from <code>fapi/app/stats.py</code>, which
+    this service could not import. Nothing is broken and nothing has
+    crashed — the module is not there.
+  </p>
+  <p class="note">
+    The rest of the service is unaffected. The API under <code>/data</code>
+    and the capture analyser under <code>/analyse</code> do not depend on
+    it.
+  </p>
+</div>
+
+<h2>What still works</h2>
+<p class="note">
+  <a href="analyse/">Analyse a capture in the browser</a>, or from a
+  terminal, with no server at all:
+</p>
+<pre class="mono">python -m pcapscan capture.pcap
+python -m pcapscan capture.pcap -f cbom &gt; cbom.json</pre>
+{% endblock %}

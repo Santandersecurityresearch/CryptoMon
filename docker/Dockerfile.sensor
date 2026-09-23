@@ -1,0 +1,189 @@
+# CryptoMon's live sensor: cryptomon.py, the eBPF half.
+#
+# This is the image that closes issue #26. ubuntu-setup.sh is forty lines of
+# apt-get ending in a `snap install` with "# TODO - find out why this
+# doesn't work" beside it, a kernel-tools package pinned to
+# 5.15.0-41-generic, and symlinks that rename clang-12 to clang; the person
+# in #26 is blocked before they can run anything. Every line of that script
+# that matters is four lines below, and the ones that do not matter are
+# gone.
+#
+#   docker build -f docker/Dockerfile.sensor -t cryptomon-sensor .
+#
+#   # does eBPF work here at all?  (compiles and verifies; no interface,
+#   # no database, nothing attached)
+#   docker run --rm --cap-add BPF cryptomon-sensor
+#
+#   # monitor an interface for real
+#   docker run --rm --network host \
+#       --cap-drop ALL --cap-add BPF --cap-add PERFMON --cap-add NET_RAW \
+#       -e DB_URL=mongodb://user:pass@127.0.0.1:27017/cryptomon \
+#       -e DB_NAME=cryptomon \
+#       cryptomon-sensor monitor -i eth0
+#
+# What the host must provide, and what this image cannot fix
+# ----------------------------------------------------------
+#  * A Linux kernel with BPF enabled. A container shares the host's kernel;
+#    there is no version of this image that gives a kernel eBPF it does not
+#    have. On macOS and Windows "the host" is Docker Desktop's Linux VM, so
+#    the program loads -- against that VM's kernel and that VM's
+#    interfaces, which are not the Mac's. Useful for checking the program,
+#    useless for monitoring your laptop's traffic.
+#  * `--network host`, to see host interfaces. Without it the sensor sees
+#    the container's veth pair and reports on nothing.
+#  * Capabilities, not `--privileged`. See below.
+#  * On kernels before 5.11, a raised memlock limit: `--ulimit memlock=-1`.
+#    Map memory was charged against RLIMIT_MEMLOCK until the switch to memcg
+#    accounting, and the failure is an opaque EPERM from bpf(BPF_MAP_CREATE).
+#
+# Why not --privileged
+# --------------------
+# `--privileged` grants every capability, drops the seccomp filter, and
+# gives the container the host's devices. It is the answer people reach for
+# because it makes the error go away, and it makes this container able to
+# load a kernel module, write to any block device on the host and read any
+# process's memory -- on a machine whose reason for running this software is
+# that somebody cares what is on the wire. The four capabilities the sensor
+# needs are:
+#
+#   CAP_BPF       bpf(2): load the program, create the perf-event map.
+#                 Split out of CAP_SYS_ADMIN in 5.8; before that there is
+#                 no smaller grant than CAP_SYS_ADMIN and that is a real
+#                 argument for a newer kernel rather than for --privileged.
+#   CAP_PERFMON   perf_event_open(2), which is how the perf ring buffer
+#                 that carries packets to userspace is opened. Also 5.8.
+#   CAP_NET_RAW   the AF_PACKET socket that load_method="library" attaches
+#                 the filter to. In docker's default set already; named
+#                 anyway so that `--cap-drop ALL --cap-add ...` works.
+#   CAP_NET_ADMIN load_method="tc": the clsact qdisc, the ingress filter,
+#                 and IFF_PROMISC. Not needed for the raw-socket path.
+#
+# Measured, not guessed, on kernel 6.12.76 (see docker/README.md for the
+# whole matrix). Each of the first three is load-bearing and the failure
+# each one prevents is different:
+#
+#   no added capability   "could not open bpf map: skb_events, error:
+#                          Operation not permitted" -- before compiling
+#   BPF alone             selftest passes: compiles and verifies in both
+#                          attach modes. Not enough to run.
+#   BPF + NET_RAW         "Could not open perf buffer" -- the program is
+#                          loaded and attached and nothing reaches
+#                          userspace, which is the failure that looks most
+#                          like a quiet network
+#   BPF + PERFMON         "Failed to open raw device b'lo': Operation not
+#                          permitted" -- nothing to attach to
+#   all three, with       every synthetic framing fixture behaves as
+#   --cap-drop ALL        intended (check_bpf_behaviour.py)
+#
+# CAP_NET_ADMIN is the one listed from what pyroute2 asks the kernel for
+# rather than from a run: the TC path needs a physical NIC and this was
+# built on a Mac. Treat it as unverified.
+#
+# The seccomp profile: docker's default allows bpf(2) and
+# perf_event_open(2) only when the caller has the matching capability,
+# which is exactly the arrangement above, so no `--security-opt seccomp`
+# is needed. If a host's profile is older and denies them outright, the
+# fix is that host's profile.
+#
+# Root inside the container
+# -------------------------
+# Unlike the api and offline images this one runs as root, and that is not
+# an oversight. Docker puts `--cap-add` capabilities in the permitted set of
+# the initial process, and a non-root uid inherits none of them across
+# execve without ambient capabilities, which docker does not set. A non-root
+# sensor here would be a container that looks safer and cannot load its
+# program. The mitigation that is real is the capability list above and
+# `--security-opt no-new-privileges`; see docker/README.md.
+
+# ubuntu:24.04, pinned by index digest -- multi-arch, so the pin fixes the
+# contents and not the architecture. Ubuntu rather than Debian or slim
+# because python3-bpfcc is the package this project has always been built
+# against (ubuntu-setup.sh) and tests/tools/bpf-image/Dockerfile is already
+# ubuntu:24.04; two eBPF environments that disagree would be two eBPF
+# environments to debug.
+FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
+
+LABEL org.opencontainers.image.title="CryptoMon sensor" \
+      org.opencontainers.image.description="Live eBPF TLS/SSH handshake monitor." \
+      org.opencontainers.image.source="https://github.com/Santandersecurityresearch/CryptoMon" \
+      org.opencontainers.image.licenses="GPL-3.0-only"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# linux-headers-generic, not linux-headers-$(uname -r). The lesson is
+# tests/tools/bpf-image/Dockerfile's and it is worth restating: bcc parses
+# the kernel headers it compiles against, and Ubuntu's python3-bpfcc is
+# older than the kernel a host happens to boot. Against 6.17 headers it
+# fails inside include/linux/bpf.h itself, on struct bpf_wq and
+# BPF_LOAD_ACQ, before it ever reaches this project's program. The container
+# must compile against headers its own bcc understands; the loaded program
+# is then accepted by whatever kernel is actually running, because that is a
+# verifier question and not a header question.
+#
+# --no-install-recommends, because linux-headers-generic otherwise drags in
+# a compiler toolchain that bcc does not use (it compiles with its own
+# bundled libclang) and this image does not want.
+#
+# python3-pyroute2 is here for load_method="tc" only. requirements.txt does
+# not list it and must not: it is Linux-only and comes from the
+# distribution, which is the same reason bcc is not in requirements.txt
+# either. bom.json's `bcc 0.1.10` is an unrelated PyPI package -- what is
+# actually installed is the apt package below.
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends \
+        python3 \
+        python3-venv \
+        python3-bpfcc \
+        python3-pyroute2 \
+        linux-headers-generic \
+        libcap2-bin \
+ && rm -rf /var/lib/apt/lists/*
+# libcap2-bin is the one package here that nothing imports. It is `capsh
+# --print`, and it earns its 100kB in the image whose reason for existing is
+# issue #26: when the sensor will not start, the first question is which
+# capabilities this container actually has, and the alternative to answering
+# it is reaching for --privileged.
+
+# --system-site-packages, because python3-bpfcc installs into
+# /usr/lib/python3/dist-packages and there is no wheel of it to install
+# instead: the venv exists to hold requirements.txt's pins without fighting
+# PEP 668's externally-managed marker, not to isolate the interpreter from
+# the distribution's bcc.
+RUN python3 -m venv --system-site-packages /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# The whole file, not the four packages cryptomon.py imports. A sensor whose
+# dependency versions differ from the API's is a pair of processes writing
+# the same collection through two versions of pymongo, and the drift would
+# be invisible until it was not.
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+WORKDIR /app
+COPY cryptomon.py /app/cryptomon.py
+COPY cryptomon/ /app/cryptomon/
+COPY fapi/ /app/fapi/
+COPY pcapscan/ /app/pcapscan/
+# The selftest, so that "does eBPF work here" is answerable with the image
+# alone and not with the image plus a checkout plus a bind mount. It loads
+# cryptomon/bpf.py by path rather than importing the package, and needs its
+# repository-root layout preserved -- hence tests/tools/ rather than
+# somewhere tidier. Its companion, check_bpf_behaviour.py, is not here: it
+# replays the synthetic capture fixtures, and .dockerignore keeps captures
+# out of every build context on purpose. Run that one from a checkout, the
+# way .github/workflows/tests.yml does.
+COPY tests/tools/check_bpf.py /app/tests/tools/check_bpf.py
+
+COPY docker/sensor-entrypoint.sh /usr/local/bin/sensor-entrypoint
+RUN chmod 0755 /usr/local/bin/sensor-entrypoint
+
+RUN python3 -m compileall -q /app
+
+ENTRYPOINT ["/usr/local/bin/sensor-entrypoint"]
+# Running the image with no arguments answers issue #26's question rather
+# than starting a service that would immediately ask which interface to use
+# -- cryptomon.py prompts on stdin when -i is absent, which in a container
+# is a hang.
+CMD ["selftest"]

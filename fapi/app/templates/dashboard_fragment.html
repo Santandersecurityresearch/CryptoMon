@@ -1,0 +1,10 @@
+{#
+  One panel, with no page around it. This is what GET /panels/{name}
+  answers and what the refresh loop assigns to a <section>'s innerHTML.
+
+  It renders the same macro the full page does, so the polled version of a
+  panel is byte-for-byte the version the server would have drawn into the
+  page. A fragment route with its own markup is a fragment route that
+  gradually stops matching the page it updates.
+#}
+{% import "dashboard_panels.html" as p with context %}{{ p.body(name, data) }}

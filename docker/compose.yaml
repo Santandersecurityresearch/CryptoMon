@@ -1,0 +1,181 @@
+# CryptoMon, as a stack you can start in one command.
+#
+#   cd docker && docker compose up --build
+#   open http://127.0.0.1:8000/analyse/
+#
+# THE DEFAULT MONGODB PASSWORD IN THIS FILE IS A PLACEHOLDER, NOT A PASSWORD.
+# It is `change-me-this-is-not-a-password` and it is written out in full so
+# that it cannot be mistaken for a generated secret. It is good enough for an
+# evaluation on your own machine, where nothing listens outside 127.0.0.1,
+# and it is not good enough for anything else. `cp env.example .env`, put a
+# real one in MONGO_PASSWORD, and see docker/README.md.
+#
+# What starts by default: MongoDB, and the API with its upload UI. Both are
+# published on 127.0.0.1 only.
+#
+# What does not: the eBPF sensor. It is in the `sensor` profile because it
+# needs host networking and elevated capabilities, and most people looking
+# at this project for the first time want to know what it says about a
+# capture they already have -- which needs none of that. Start it with
+# `docker compose --profile sensor up` once you have decided you want a
+# process on this host reading every frame on an interface.
+#
+# The offline analyser is not a service at all. It is a command that reads a
+# file and exits:
+#   docker run --rm -v "$PWD:/captures:ro" cryptomon-offline /captures/x.pcap
+
+name: cryptomon
+
+services:
+
+  # --------------------------------------------------------------------
+  # the database
+  # --------------------------------------------------------------------
+  mongo:
+    # Pinned by index digest as well as by tag, so that `docker compose up`
+    # in six months brings up the database this was tested against. 7.0 is
+    # the series ubuntu-setup.sh installs on the host.
+    image: mongo:7.0@sha256:9854f7139445d766a9523571d6f047530c45547460ffcf8259eb2bf4264632ca
+    restart: unless-stopped
+    environment:
+      # Authentication is on. A MongoDB with no credential at all would be
+      # one `ports:` line away from being an open database, and the line
+      # below is exactly the sort of thing somebody edits in a hurry.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-cryptomon}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-change-me-this-is-not-a-password}
+    ports:
+      # Loopback, not 0.0.0.0. `27017:27017` would publish the database on
+      # every interface of this host, and on Linux docker's forwarding rules
+      # sit in front of the firewall's INPUT chain, so a host firewall would
+      # not stop it.
+      #
+      # Published at all, rather than left on the compose network, for two
+      # reasons: `mongosh` and `mongoimport` from the host are how this
+      # project's own documentation says to look at the data, and the
+      # sensor runs with `network_mode: host` and so cannot resolve `mongo`.
+      # Set MONGO_PORT= (empty) in .env to drop the publication entirely if
+      # you use neither.
+      - "${MONGO_BIND:-127.0.0.1}:${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # What `depends_on: service_healthy` waits for. Without it the API
+      # starts first, its lifespan calls ensure_indexes against a socket
+      # nobody is listening on, and the first thing an evaluator sees is a
+      # timeout.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  # --------------------------------------------------------------------
+  # the API and the upload UI
+  # --------------------------------------------------------------------
+  api:
+    build:
+      # The repository root, because the image copies api.py, fapi/,
+      # pcapscan/ and cryptomon/ and they are siblings of docker/. The
+      # root's .dockerignore is what keeps that from meaning 1.86GB.
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    image: cryptomon-api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # authSource=admin: MONGO_INITDB_ROOT_* creates the user in the admin
+      # database, so authenticating against `cryptomon` fails with an
+      # "Authentication failed" that says nothing about which database was
+      # tried.
+      DB_URL: mongodb://${MONGO_USER:-cryptomon}:${MONGO_PASSWORD:-change-me-this-is-not-a-password}@mongo:27017/?authSource=admin
+      DB_NAME: ${MONGO_DB:-cryptomon}
+      # Writes through the API stay refused unless somebody opts in, which
+      # is fapi.config's default and is repeated here so that it is visible
+      # in the file an operator edits.
+      READ_ONLY: ${READ_ONLY:-true}
+      # Empty means no API key is required. That is safe only while the
+      # published port below is 127.0.0.1. Set it before changing API_BIND.
+      API_KEY: ${API_KEY:-}
+      UPLOADS_ENABLED: ${UPLOADS_ENABLED:-true}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-268435456}
+      ANALYSIS_TIMEOUT_SECONDS: ${ANALYSIS_TIMEOUT_SECONDS:-120}
+      # A report holds the SNI of every connection in the capture, which is
+      # browsing history. It is swept after this many hours whether or not
+      # anybody looked at it. 0 disables expiry.
+      REPORT_RETENTION_HOURS: ${REPORT_RETENTION_HOURS:-24}
+      # The live collection does not expire by default, on purpose: see
+      # fapi/app/retention.py.
+      DATA_RETENTION_HOURS: ${DATA_RETENTION_HOURS:-0}
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"
+    volumes:
+      # Declared in the image too, so that forgetting this line costs disk
+      # in the container's writable layer rather than silently working.
+      - api-uploads:/var/lib/cryptomon/uploads
+    # The API writes uploads, reports and nothing else. Everything it writes
+    # has a volume or a tmpfs; the image itself is immutable at runtime.
+    read_only: true
+    tmpfs:
+      # pcapscan.sandbox re-executes the interpreter for every capture and
+      # Python wants somewhere to put a temporary file even when it does not
+      # use one. Small, and it dies with the container.
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # --------------------------------------------------------------------
+  # the eBPF sensor -- opt in with `--profile sensor`
+  # --------------------------------------------------------------------
+  sensor:
+    profiles: ["sensor"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sensor
+    image: cryptomon-sensor
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # The host's network namespace, because the point is to watch the host's
+    # interfaces. It also means this container has no network isolation from
+    # the host at all, which is the price and is why this is a profile.
+    network_mode: host
+    # Not `privileged: true`. Dockerfile.sensor says at length what each of
+    # these is for and what --privileged would additionally hand over.
+    cap_add:
+      - BPF
+      - PERFMON
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # 127.0.0.1, not `mongo`: with network_mode: host there is no compose
+      # network to resolve a service name on. This is the port mongo
+      # publishes above, which is why it is published.
+      DB_URL: mongodb://${MONGO_USER:-cryptomon}:${MONGO_PASSWORD:-change-me-this-is-not-a-password}@127.0.0.1:${MONGO_PORT:-27017}/?authSource=admin
+      DB_NAME: ${MONGO_DB:-cryptomon}
+      # The interface to watch. There is no default and the entrypoint
+      # refuses to start without one, with an error that says what to set.
+      #
+      # Carried in the environment rather than written into `command` as
+      # `${SENSOR_IFACE:?...}`, because compose interpolates every service
+      # in this file whether or not an active profile selects it: a required
+      # variable here would make a plain `docker compose up` -- which does
+      # not start the sensor at all -- fail before it started anything.
+      SENSOR_IFACE: ${SENSOR_IFACE:-}
+    command: ["monitor"]
+
+volumes:
+  mongo-data:
+  # Reports, and uploads for the moments they exist before being analysed
+  # and deleted. Separate from the database volume so that `docker volume rm
+  # cryptomon_api-uploads` throws away every stored report without touching
+  # the monitoring history.
+  api-uploads:

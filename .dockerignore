@@ -1,0 +1,99 @@
+# What never reaches a build context.
+#
+# Every image in docker/ builds with the repository root as its context, and
+# a context is packed and handed to the daemon before the first instruction
+# runs. Measured over this repository's working tree, that transfer is
+# 1.86GB without this file and 844kB with it: 240MB of packet captures under
+# CryptomonData/ plus the 240MB of zips they came out of, 13MB more under
+# sandbox/, a 690MB monitor dump beside those, and 570MB of git history. No
+# image needs any of it.
+#
+# BuildKit is cleverer than that figure suggests -- when a Dockerfile's COPY
+# lines name specific paths, as all three of these do, it transfers only
+# those paths. The 1.86GB is what the classic builder pays, what any
+# `COPY . .` pays, and what the first careless line added to any of these
+# files would pay.
+#
+# It is also a disclosure control, and that is the half worth keeping when
+# somebody later decides the size no longer matters. `COPY . .` copies
+# whatever happens to be lying in the working tree, and in this repository
+# that is other people's packet captures and MongoDB dumps. A capture's SNI
+# field is browsing history -- fapi/app/uploads.py says so at length, and
+# fapi/app/retention.py expires reports for exactly that reason. A layer
+# expires never, and is pushed to whichever registry somebody points at it.
+# So the captures are excluded here rather than left to each Dockerfile's
+# COPY lines being careful.
+#
+# Docker's patterns are matched against the whole relative path and `*` does
+# not cross a `/`, so a rule meant to apply at any depth is written `**/`.
+# `CryptomonData` on its own excludes the directory and everything under it.
+
+# ---------------------------------------------------------------------------
+# The corpora. This is the 254MB of captures and the 690MB dump.
+# ---------------------------------------------------------------------------
+CryptomonData
+sandbox
+
+# Captures anywhere, including tests/fixtures. Nothing in any image reads a
+# capture from inside itself: the offline analyser is given one on a bind
+# mount, which is also the only way it can be given one that is not in this
+# repository. Keeping them out means a stray capture dropped in the working
+# tree cannot be baked into an image by accident.
+**/*.pcap
+**/*.pcapng
+**/*.pcap.gz
+**/*.pcapng.gz
+**/*.zip
+
+# TinyDB's on-disk database, written by a monitor run without MongoDB. Same
+# contents as the collection: handshakes, addresses and server names.
+cryptomon.json
+**/cryptomon-*.json
+**/monitor-*.json
+
+# ---------------------------------------------------------------------------
+# Version control, local state and editor droppings
+# ---------------------------------------------------------------------------
+.git
+.gitignore
+.github
+.claude
+**/__pycache__
+**/*.py[cod]
+**/*$py.class
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+**/.DS_Store
+
+# ---------------------------------------------------------------------------
+# Anything that could carry a credential
+# ---------------------------------------------------------------------------
+# .env is how compose is configured (docker/README.md), and compose reads it
+# from the host -- it has no business inside an image. docker/env.example is
+# deliberately named without the dot so that it is not caught here and not
+# mistaken for a live one. The service unit written by create-service.sh
+# carries DB_URL with the password in it.
+.env
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+cryptomon.service
+config-secrets.sh
+
+# ---------------------------------------------------------------------------
+# Not needed by any image
+# ---------------------------------------------------------------------------
+# The Dockerfiles copy the packages and entry points they need by name, so
+# these are belt and braces -- but a context small enough to read is a
+# context somebody will check before adding a COPY line.
+venv
+.venv
+img
+docs
+DEVELOPMENT.md
+PULL_REQUESTS.md

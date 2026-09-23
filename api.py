@@ -33,7 +33,9 @@ from fapi.config import settings
 
 from fapi.app.indexes import ensure_indexes
 from fapi.app.retention import sweep_periodically
+from fapi.app.dashboard import router as dashboard_routers
 from fapi.app.routers import router as data_routers
+from fapi.app.stats import router as stats_routers
 from fapi.app.uploads import router as upload_routers
 
 
@@ -70,7 +72,16 @@ async def lifespan(app: FastAPI):
         app.mongodb_client.close()
 
 
-app = FastAPI(lifespan=lifespan)
+# root_path is what makes a subpath mount work. FastAPI puts it in the ASGI
+# scope; starlette strips it before routing and puts it back in url_for, so
+# the redirect after an upload (fapi/app/uploads.py) and the /docs page both
+# land on the right side of the prefix. Empty by default, which is the root
+# mount every existing deployment has.
+#
+# The reverse proxy must pass the URI *unchanged*, prefix included, and must
+# NOT also be given `uvicorn --root-path` -- that flag prepends the prefix a
+# second time. deploy/nginx/cryptomon.conf explains both.
+app = FastAPI(lifespan=lifespan, root_path=settings.ROOT_PATH)
 
 # Add CORS middleware if needed...
 # app.add_middleware(CORSMiddleware,allow_origins="*",allow_credentials=True,allow_methods=["*"],allow_headers=["*"],)
@@ -79,6 +90,17 @@ app.include_router(data_routers, tags=["cryptomon"], prefix="/data")
 # The capture upload UI. Mounted under /analyse rather than at the root so
 # that PR-37's dashboard can have "/" without either of them moving.
 app.include_router(upload_routers, tags=["analyse"], prefix="/analyse")
+# The read-only rollups. Declared before anything that claims "/",
+# because FastAPI matches in declaration order and a root mount declared
+# first would swallow these -- the same defect as PR-06's "/{id}"
+# swallowing "/data/count", one level up.
+app.include_router(stats_routers, tags=["stats"], prefix="/stats")
+# The dashboard, at the site root -- which is what the upload UI moved
+# out of the way for. It reads its numbers from fapi/app/stats.py through
+# an import it does inside the request handler, so a deployment without
+# that module answers a 503 page saying so rather than failing to start.
+# Declared last, because it claims "/".
+app.include_router(dashboard_routers, tags=["dashboard"])
 
 # load some static pages, if required. 
 # app.mount("/", StaticFiles(directory="frontend/dist/"), name="ui")
