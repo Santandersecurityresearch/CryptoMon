@@ -7,8 +7,8 @@ and no socket.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -m smoke     # merge gate, ~0.2s, no capture fixtures
-pytest              # everything, ~5s
+pytest -m smoke     # merge gate, ~5s, no capture fixtures
+pytest              # everything, ~12s
 ```
 
 ## What is here

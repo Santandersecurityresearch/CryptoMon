@@ -49,6 +49,23 @@ SYMMETRIC = 'symmetric'
 UNKNOWN = 'unknown'
 NOT_APPLICABLE = 'none'
 
+# Verdicts about *protection*, as distinct from the verdicts above about
+# quantum resistance. A protocol can be unbroken by Shor and still have no
+# cryptography in it at all, and a report that answers only the first
+# question says nothing about the 61% of this corpus's UDP that anyone on
+# the segment can read today. `pcapscan/cleartext.py` produces these.
+#
+# `NOT_APPLICABLE` above is reused as the `none` rung rather than a fourth
+# spelling of the same word -- but it is kept in its own field, never fed
+# into `key_exchange_verdict`: "a resumed TLS session needed no key
+# exchange" and "DHCP has no cryptography" are the same word about very
+# different situations.
+PROTECTION_OBSOLETE = 'obsolete'
+PROTECTION_AUTHENTICATED = 'authenticated only'
+PROTECTION_ENCRYPTED = 'encrypted'
+PROTECTIONS = (NOT_APPLICABLE, PROTECTION_OBSOLETE,
+               PROTECTION_AUTHENTICATED, PROTECTION_ENCRYPTED)
+
 # Substrings naming a post-quantum primitive. Matched case-insensitively
 # against the names this project's own tables produce, which follow the IANA
 # registry and the draft names still in use for the Kyber round-3 groups.
@@ -78,14 +95,15 @@ SYMMETRIC_BITS = (
     ('AES_256', 256), ('AES_128', 128), ('CHACHA20', 256),
     ('CAMELLIA_256', 256), ('CAMELLIA_128', 128),
     ('ARIA_256', 256), ('ARIA_128', 128),
-    ('3DES', 112), ('DES_CBC', 56), ('RC4', 128), ('NULL', 0),
+    ('3DES', 112), ('DES_CBC', 56), ('DES40', 40), ('DES', 56),
+    ('RC4', 128), ('NULL', 0),
 )
 
 # Ciphers that are broken today, by classical cryptanalysis, whatever their
 # nominal key length. Reporting RC4 as "128 bits, 64 after Grover" would be
 # an answer to the wrong question by a wide margin: it is not waiting for a
 # quantum computer.
-SYMMETRIC_BROKEN = ('RC4', '3DES', 'DES_CBC', 'NULL')
+SYMMETRIC_BROKEN = ('RC4', '3DES', 'DES_CBC', 'DES40', 'DES', 'NULL')
 
 # Anything at or below this after Grover is not a defensible symmetric
 # choice for data that has to stay secret. 128 pre-Grover leaves 64.
@@ -245,6 +263,11 @@ class Summary:
         self.ech = collections.Counter()
         self.algorithms = {}
         self.ssh_kex = collections.Counter()
+        # Flows whose cryptography exists but cannot be read: a UDP-
+        # encapsulated ESP tunnel whose IKE_SA_INIT is not in the capture.
+        # Kept out of `key_exchange_verdict` so that "we could not see it"
+        # is never reported as "there was none".
+        self.opaque_flows = 0
         # Distinct certificates, by fingerprint. A CBOM needs each one as its
         # own asset with its own subject and validity, which a count of
         # "RSA-2048: 274" cannot supply.
@@ -255,6 +278,20 @@ class Summary:
         self.sessions += 1
         if 'ssh' in record:
             self._add_ssh(record)
+            return
+        if 'ikev2' in record:
+            self._add_ikev2(record)
+            return
+        if 'tls' not in record:
+            # A record from a handler that negotiated neither TLS nor SSH.
+            # The UDP handlers emit these: an unprotected DNS or HSRP flow
+            # has no ciphersuite to put in a `tls` block, so it has none.
+            # Without this branch each one is counted as a TLS session that
+            # performed no key exchange, and on the capture corpus that is
+            # 1,058 cleartext UDP flows arriving in the report as resumed
+            # TLS sessions -- moving the quantum-safe fraction by inventing
+            # sessions that never negotiated anything.
+            self.protocols[_record_protocol(record)] += 1
             return
         tls = record.get('tls') or {}
         self.protocols['tls'] += 1
@@ -354,6 +391,67 @@ class Summary:
             self._note(signature, 'signature', classify_algorithm(signature),
                        record)
 
+    def _add_ikev2(self, record):
+        """
+        An IPsec negotiation, from `pcapscan.ikev2`.
+
+        IKEv2 is the one protocol here that states its cryptography instead of
+        implying it: RFC 7296 puts the encryption algorithm, the integrity
+        algorithm, the PRF and the key exchange on the wire as four separately
+        numbered transforms, in the clear. So almost nothing is inferred here.
+
+        The one thing that still has to be got right is proposed against
+        selected. An IKE_SA_INIT request is a *menu* -- a strongSwan default
+        offers a dozen transforms -- and counting a menu as a deployment would
+        report every group on it as if it were in use. `pcapscan.ikev2` fills
+        `kex_group` only when a response carrying an SA payload was captured,
+        and this counts only that.
+        """
+        ike = record.get('ikev2') or {}
+        self.protocols[_protocol_label(record).lower()] += 1
+        if ike.get('opaque'):
+            # An ESP tunnel. The key exchange did happen -- in an IKE_SA_INIT
+            # this capture does not contain -- so counting it as `none` would
+            # file it beside a resumed TLS session, which performed no key
+            # exchange at all. Different fact, different counter. A readiness
+            # report should be able to say how much traffic it could not
+            # account for rather than quietly leaving it out of the totals.
+            self.opaque_flows += 1
+            return
+
+        group = ike.get('kex_group')
+        verdict = classify_key_exchange(group)
+        self.key_exchange[group or 'none'] += 1
+        self.key_exchange_verdict[verdict] += 1
+        if group:
+            self._note(group, 'key-exchange', verdict, record)
+
+        cipher = ike.get('encryption')
+        if cipher:
+            self._note(cipher, 'cipher', SYMMETRIC, record)
+            label = symmetric_label(cipher)
+            if label:
+                self.symmetric_bits[label] += 1
+        for name, kind in ((ike.get('prf'), 'prf'),
+                           (ike.get('integrity'), 'integrity')):
+            if name and name != 'NONE':
+                self._note(name, kind, SYMMETRIC, record)
+
+        # The finding a readiness report is for, in its IKEv2 spelling: the
+        # initiator asked for a KEM alongside its group (RFC 9370) and the
+        # responder answered INVALID_KE_PAYLOAD or picked a proposal without
+        # one. Same shape as the TLS HelloRetryRequest downgrade above.
+        offered = ike.get('offered_kex_group')
+        if offered and classify_algorithm(offered) in (POST_QUANTUM, HYBRID):
+            forced = ike.get('retry_kex_group') or group
+            if classify_algorithm(forced) == CLASSICAL:
+                self.downgrades.append({
+                    'hostname': ike.get('responder'),
+                    'offered': offered,
+                    'forced': forced,
+                    'ts': record.get('ts'),
+                })
+
     def _add_ssh(self, record):
         self.protocols['ssh'] += 1
         ssh = record.get('ssh') or {}
@@ -416,6 +514,7 @@ class Summary:
             'deprecated_tls_versions': sum(
                 self.tls_versions[v] for v in DEPRECATED_TLS_VERSIONS),
             'broken_symmetric_ciphers': weak_symmetric,
+            'opaque_flows': self.opaque_flows,
         }
 
     def as_dict(self):
@@ -450,10 +549,32 @@ TOP_HOSTS = 50
 MAX_CERTIFICATES = 512
 
 
+def _record_protocol(record):
+    """
+    What a record with neither a `tls` nor an `ssh` block calls itself.
+
+    Named from the record rather than assumed, so a handler added later does
+    not need this function changed to be counted correctly.
+    """
+    cleartext = record.get('cleartext')
+    if isinstance(cleartext, dict) and cleartext.get('protocol'):
+        return str(cleartext['protocol'])
+    for name in ('quic', 'dtls', 'ikev2', 'cleartext'):
+        if name in record:
+            return name
+    return UNKNOWN
+
+
 def _protocol_label(record):
-    """'TLSv1.3', 'SSH' -- how this record's protocol should be named."""
+    """'TLSv1.3', 'SSH', 'IKEv2' -- how this record's protocol is named."""
     if 'ssh' in record:
         return 'SSH'
+    if 'ikev2' in record:
+        # Three protocols share one handler and one record key, because port
+        # 4500 carries all three; the CBOM wants them apart, since an ESP
+        # tunnel is `ipsec` and an IKE negotiation is `ike`.
+        return {'esp': 'ESP', 'ikev1': 'IKEv1'}.get(
+            (record.get('ikev2') or {}).get('kind'), 'IKEv2')
     versions = (record.get('tls') or {}).get('tls_versions')
     if isinstance(versions, list):
         # A client offering 1.3 and 1.2 that ends up on 1.3 lists both; the

@@ -59,6 +59,12 @@ PRIMITIVE_KEM = 'kem'
 PRIMITIVE_COMBINER = 'combiner'
 PRIMITIVE_SIGNATURE = 'signature'
 PRIMITIVE_PKE = 'pke'
+# IKEv2 names its encryption, PRF and integrity transforms separately, so
+# unlike a TLS ciphersuite each one maps onto a single CycloneDX primitive.
+PRIMITIVE_BLOCK = 'block-cipher'
+PRIMITIVE_AE = 'ae'
+PRIMITIVE_MAC = 'mac'
+PRIMITIVE_KDF = 'kdf'
 
 # NIST post-quantum security category, by parameter set. Absent from a name
 # means the algorithm makes no post-quantum claim, which is 0 -- not unknown.
@@ -102,7 +108,30 @@ OIDS = {
     'mldsa87': '2.16.840.1.101.3.4.3.19',
 }
 
+# CycloneDX names protocols in its own vocabulary, and it is not this
+# project's: the 1.6 enum is tls / ssh / ipsec / ike / sstp / wpa / other /
+# unknown. So an IKE negotiation is `ike` carrying version "2.0", not a
+# protocol called "IKEv2", and an ESP tunnel is `ipsec`.
 PROTOCOL_TYPES = {'tls': 'tls', 'ssh': 'ssh'}
+PROTOCOL_LABELS = {
+    'SSH': ('ssh', None),
+    'IKEv2': ('ike', '2.0'),
+    'IKEv1': ('ike', '1.0'),
+    'ESP': ('ipsec', None),
+}
+
+# The labels `cryptomon.analysis._protocol_label` produces for everything
+# that is not a TLS version. `summary.protocols` is keyed by the lowercase
+# form of each.
+NON_TLS_LABELS = ('SSH', 'IKEv2', 'IKEv1', 'ESP')
+
+# CycloneDX `ikev2TransformTypes` (RFC 7296 transform types 1-4), by this
+# project's inventory kind. `esn` and `auth` are deliberately absent: ESN is
+# not carried in the summary, and IKEv2's authentication method is negotiated
+# inside the encrypted IKE_AUTH exchange, so a network observer never sees
+# it. Emitting either would be inventing a value the traffic did not contain.
+IKEV2_TRANSFORM_SLOTS = {'cipher': 'encr', 'prf': 'prf',
+                         'integrity': 'integ', 'key-exchange': 'ke'}
 
 MAX_OCCURRENCES = 32
 
@@ -176,7 +205,21 @@ def primitive_for(entry):
         # A certificate's key is used to verify a signature, whatever else
         # the algorithm could do.
         return PRIMITIVE_SIGNATURE
+    if entry['kind'] == 'cipher':
+        # An IKEv2 ENCR transform names one concrete cipher rather than a
+        # suite, so the schema's own word for it is available: the AEAD modes
+        # are `ae` and the rest are block ciphers.
+        return PRIMITIVE_AE if _is_aead(entry['name']) else PRIMITIVE_BLOCK
+    if entry['kind'] == 'prf':
+        return PRIMITIVE_KDF
+    if entry['kind'] == 'integrity':
+        return PRIMITIVE_MAC
     return 'other'
+
+
+def _is_aead(name):
+    flat = _flat(name)
+    return any(mode in flat for mode in ('gcm', 'ccm', 'poly1305', 'mgm'))
 
 
 def functions_for(entry):
@@ -186,6 +229,12 @@ def functions_for(entry):
         return ['keyderive']
     if entry['kind'] in ('signature', 'certificate-key'):
         return ['sign', 'verify']
+    if entry['kind'] == 'cipher':
+        return ['encrypt', 'decrypt']
+    if entry['kind'] == 'prf':
+        return ['keyderive']
+    if entry['kind'] == 'integrity':
+        return ['tag']
     return []
 
 
@@ -283,6 +332,32 @@ def _certificate_component(certificate, source):
     return component
 
 
+def _protocol_labels(summary):
+    """Every protocol observed, under the label the inventory files it under."""
+    return set(summary.tls_versions) | {
+        label for label in NON_TLS_LABELS
+        if summary.protocols.get(label.lower())}
+
+
+def _ikev2_transform_types(summary, protocol):
+    """
+    An IKE component's `ikev2TransformTypes`, as refs into this same BOM.
+
+    This is the reason a network CBOM is worth having for IPsec: RFC 7296
+    puts the encryption algorithm, the PRF, the integrity algorithm and the
+    key exchange on the wire as four separately numbered transforms, and
+    CycloneDX has a field for exactly those four. Nothing is inferred from a
+    suite name, because IKEv2 never used one.
+    """
+    slots = {}
+    for entry in summary.inventory:
+        slot = IKEV2_TRANSFORM_SLOTS.get(entry['kind'])
+        if slot is None or protocol not in entry['protocols']:
+            continue
+        slots.setdefault(slot, set()).add(_ref(entry['kind'], entry['name']))
+    return {slot: sorted(refs) for slot, refs in sorted(slots.items())}
+
+
 def _protocol_components(summary):
     """One component per protocol version, carrying its cipher suites."""
     suites_by_protocol = {}
@@ -293,16 +368,21 @@ def _protocol_components(summary):
             suites_by_protocol.setdefault(protocol, []).append(entry['name'])
 
     components = []
-    for protocol in sorted(set(summary.tls_versions) | set(suites_by_protocol)
-                           | ({'SSH'} if summary.protocols.get('ssh') else set())):
-        kind = 'ssh' if protocol == 'SSH' else 'tls'
-        version = protocol.replace('TLSv', '') if kind == 'tls' else ''
-        properties = {'type': PROTOCOL_TYPES[kind]}
+    for protocol in sorted(_protocol_labels(summary)
+                           | set(suites_by_protocol)):
+        kind, version = PROTOCOL_LABELS.get(protocol, ('tls', None))
+        if kind == 'tls':
+            version = protocol.replace('TLSv', '')
+        properties = {'type': kind}
         if version:
             properties['version'] = version
         suites = sorted(set(suites_by_protocol.get(protocol, [])))
         if suites:
             properties['cipherSuites'] = [{'name': suite} for suite in suites]
+        if kind == 'ike':
+            transforms = _ikev2_transform_types(summary, protocol)
+            if transforms:
+                properties['ikev2TransformTypes'] = transforms
         refs = sorted({_ref(entry['kind'], entry['name'])
                        for entry in summary.inventory
                        if protocol in entry['protocols']
@@ -315,7 +395,7 @@ def _protocol_components(summary):
             'name': protocol,
             'description': 'observed in {0} session(s)'.format(
                 summary.tls_versions.get(protocol)
-                or summary.protocols.get('ssh', 0)),
+                or summary.protocols.get(protocol.lower(), 0)),
             'cryptoProperties': {'assetType': 'protocol',
                                  'protocolProperties': properties},
         })
@@ -327,8 +407,7 @@ def _dependencies(summary, components):
     defined = {component['bom-ref'] for component in components}
     dependencies = []
 
-    for protocol in sorted(set(summary.tls_versions)
-                           | ({'SSH'} if summary.protocols.get('ssh') else set())):
+    for protocol in sorted(_protocol_labels(summary)):
         ref = _ref('protocol', protocol)
         if ref not in defined:
             continue

@@ -34,12 +34,12 @@ carries; host key sizes and the PQ markers are PR-33.
 import collections
 
 from cryptomon.data import SSH_SECTIONS, TLS_GROUPS_DICT
-from cryptomon.parsers.framing import decode_frame
 from cryptomon.parsers.tls import parse_hello_message
 from cryptomon.ssh_enrichment import describe_ssh_session
 from cryptomon.utils import describe_codepoint, lst2int, printable_text
 from pcapscan.reader import Reader
 from pcapscan.reassembly import Reassembler
+from pcapscan.tunnels import decode_packet
 from pcapscan.protocols import DEFAULT_HEAD_BYTES, LIKELY, detect
 from pcapscan.records import (HS_CERTIFICATE, HS_CLIENT_HELLO,
                               HS_SERVER_HELLO, HS_SERVER_KEY_EXCHANGE,
@@ -59,6 +59,15 @@ SSH_MSG_KEXINIT = 20
 SSH_COOKIE_LEN = 16
 MAX_SSH_BANNER = 255            # RFC 4253 section 4.2
 MAX_SSH_NAMELIST = 4096
+
+
+# The sentinel `--no-certificates` passes. It means "do not parse, and keep
+# the DER", which is a third state: `None` means "use whatever parser this
+# installation has", and a callable means "use this one". The flag used to
+# pass `lambda _body: []`, which is a callable, so the chain was parsed to
+# nothing and the DER thrown away -- while `--help` promised the opposite.
+# A flag that loses the data it says it keeps is worse than no flag.
+KEEP_DER = object()
 
 
 def _certificate_parser():
@@ -256,7 +265,10 @@ class Session:
                               'from_client': from_client}
                              for from_client, alert in self.alerts]
         if self.certificate_messages:
-            parser = certificate_parser or _certificate_parser()
+            if certificate_parser is KEEP_DER:
+                parser = None
+            else:
+                parser = certificate_parser or _certificate_parser()
             if parser is None:
                 tls['certificates_der'] = [bytes(m) for m
                                            in self.certificate_messages]
@@ -353,19 +365,54 @@ class SessionBuilder:
     closes, when its handshake becomes unreadable, or when the capture ends.
     """
 
-    def __init__(self, reassembler=None, certificate_parser=None):
+    def __init__(self, reassembler=None, certificate_parser=None,
+                 router=None):
         # `reassembler or Reassembler()` would discard the caller's instance:
         # Reassembler defines __len__, so an empty one is falsy. This is the
         # same shape of bug as the `self.mongodb = False` sentinel that made
         # the TinyDB branch unreachable -- a truthiness test standing in for
         # an identity test.
         self.reassembler = Reassembler() if reassembler is None else reassembler
+        # The UDP half. Same sentinel care as above, and for the same
+        # reason: DatagramRouter defines __len__. Pass router=False to turn
+        # UDP off entirely -- which is not the same as passing None.
+        if router is None:
+            from pcapscan.datagrams import DatagramRouter
+            router = DatagramRouter()
+        # `router or None` is wrong here and was written that way first:
+        # DatagramRouter defines __len__, so a freshly built, empty one is
+        # falsy and would have been thrown away immediately -- the exact
+        # defect the comment above describes, made while writing the comment
+        # about it. Test identity against False, not truthiness.
+        self.router = None if router is False else router
         self.certificate_parser = certificate_parser
         self.sessions = {}
         self.stats = collections.Counter()
         self._finished = []
 
-    def push(self, timestamp, raw, frame):
+    def push_datagram(self, timestamp, raw, datagram):
+        """
+        Deliver one UDP datagram to whichever protocol handler claims it.
+
+        Separate from `push` because a DecodedDatagram is a different type
+        with no sequence number and no flags -- see the comment on it. The
+        callers try `decode_frame` first and fall back to this, which is the
+        order the corpus is in: 125,708 TCP frames to 30,531 datagrams.
+        """
+        if self.router is None:
+            return
+        self.stats['datagrams'] += 1
+        self.router.push(timestamp, raw, datagram)
+
+    def push(self, timestamp, raw, frame, truncated=False):
+        if truncated:
+            # The switch told us it cut this mirrored frame short. That is
+            # *labelled* missing data, and it is the rare kind: both times
+            # this project got a wrong answer that looked right -- truncated
+            # ClientHellos parsed as whole, tshark's desegmenter giving up in
+            # silence -- the data was missing without saying so. Throwing the
+            # label away would be choosing the worse of the two.
+            self.stats['tunnel_truncated_frames'] += 1
         update = self.reassembler.push(timestamp, raw, frame)
         if update is None:
             return
@@ -523,6 +570,13 @@ class SessionBuilder:
                 continue
             self.stats['sessions_emitted'] += 1
             yield session.document(self.certificate_parser)
+        if self.router is not None:
+            for document in self.router.finish():
+                self.stats['sessions_emitted'] += 1
+                self.stats['datagram_sessions_emitted'] += 1
+                yield document
+            for name, value in self.router.stats.items():
+                self.stats['udp_' + name] += value
 
 
 def iter_sessions(path, reassembler=None, certificate_parser=None,
@@ -539,12 +593,30 @@ def iter_sessions(path, reassembler=None, certificate_parser=None,
         builder = SessionBuilder(reassembler, certificate_parser)
     with Reader(path) as reader:
         for packet in reader:
-            frame = decode_frame(packet.data, packet.linktype)
-            if frame is None:
+            # Mirrored traffic -- SPAN, RSPAN, ERSPAN, a TAP feeding a
+            # collector -- arrives wrapped in GRE inside IP, and until this
+            # stage existed every frame of it was dropped on decode_frame's
+            # `return None`. The unwrapping happens *before* framing rather
+            # than inside it: peeling a tunnel does not yield a transport
+            # header, it yields another whole frame that needs the entire
+            # link -> network -> transport walk run over it again, and
+            # putting that recursion inside decode_frame would hand every
+            # caller -- the live eBPF adapter included -- a recursion it did
+            # not ask for, with an attacker-chosen depth.
+            decoded = decode_packet(packet.data, packet.linktype,
+                                    builder.stats)
+            if decoded is None:
                 builder.stats['frames_undecodable'] += 1
                 continue
+            if decoded.frame is None:
+                builder.push_datagram(packet.timestamp, decoded.raw,
+                                      decoded.datagram)
+                continue
             builder.stats['frames'] += 1
-            builder.push(packet.timestamp, packet.data, frame)
+            # `decoded.raw` rather than `packet.data`: for a tunnelled packet
+            # the offsets index the *inner* frame, not the one off the wire.
+            builder.push(packet.timestamp, decoded.raw, decoded.frame,
+                         decoded.tunnel is not None and decoded.tunnel.truncated)
         builder.stats.update({'capture_' + k: v
                               for k, v in reader.stats.items()})
     yield from builder.finish()

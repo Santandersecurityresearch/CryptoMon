@@ -275,20 +275,36 @@ def _worker(argv):
     applied = apply_limits(args.address_space, args.cpu_seconds)
 
     from cryptomon.analysis import analyse
-    from cryptomon.parsers.framing import decode_frame
     from pcapscan.export import write_json
     from pcapscan.reader import Reader
     from pcapscan.sessions import SessionBuilder
+    from pcapscan.tunnels import decode_packet
 
     builder = SessionBuilder()
     with Reader(args.capture) as reader:
         for packet in reader:
-            frame = decode_frame(packet.data, packet.linktype)
-            if frame is None:
+            # The same decode the CLI does, and it has to stay that way. This
+            # loop was TCP-only for two waves after the CLI stopped being,
+            # which meant a capture uploaded through the browser was analysed
+            # by a strictly weaker parser than the same file on the command
+            # line -- silently, since a report of nothing looks like a
+            # capture with nothing in it. An upload is the most
+            # attacker-controlled input this project takes and the least
+            # likely to be re-run by hand, so it is the last place that
+            # should quietly see less.
+            decoded = decode_packet(packet.data, packet.linktype,
+                                    builder.stats)
+            if decoded is None:
                 builder.stats['frames_undecodable'] += 1
                 continue
+            if decoded.frame is None:
+                builder.push_datagram(packet.timestamp, decoded.raw,
+                                      decoded.datagram)
+                continue
             builder.stats['frames'] += 1
-            builder.push(packet.timestamp, packet.data, frame)
+            builder.push(packet.timestamp, decoded.raw, decoded.frame,
+                         decoded.tunnel is not None
+                         and decoded.tunnel.truncated)
         capture_stats = dict(reader.stats)
 
     records = list(builder.finish())
