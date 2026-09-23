@@ -1037,3 +1037,36 @@ def test_the_corpus_udp_inventory():
     # HSRP lives only in `sandbox/`, so it is not asserted here.
     assert identified['dns'] > 0
     assert sum(identified.values()) > 0
+
+
+def test_only_an_rrsig_makes_an_answer_signed():
+    """
+    A DNSKEY with no signature over it is not an authenticated answer.
+
+    `signed` used to be set by any record in DNSSEC_TYPES -- DS, DNSKEY,
+    NSEC, CDS -- so a plain `dig DNSKEY example.com` response came back
+    labelled "authenticated against the zone key". Only RRSIG (46)
+    authenticates an RRset, and this tool should not claim authentication it
+    has not seen.
+    """
+    from pcapscan.cleartext import DNSSEC_TYPES, RRSIG_TYPE
+    assert RRSIG_TYPE == 46
+    assert RRSIG_TYPE in DNSSEC_TYPES
+    assert DNSSEC_TYPES - {RRSIG_TYPE}, 'the other DNSSEC types still exist'
+
+
+def test_a_sticky_flag_latches_across_a_flow():
+    """
+    dnssec_signed must not freeze at whatever the first datagram said.
+
+    The flags are emitted as ints rather than bools, so they missed the bool
+    branch in _merge_facts and hit `setdefault` -- which pinned them to the
+    first datagram. A flow of (query with DO set) then (response carrying an
+    RRSIG) reported dnssec_signed 0, having just seen the signature.
+    """
+    from pcapscan.cleartext import CleartextHandler
+    handler = CleartextHandler()
+    handler._merge_facts('dns', {'dnssec_signed': 0, 'message_type': None})
+    handler._merge_facts('dns', {'dnssec_signed': 1, 'message_type': 'ack'})
+    assert handler.facts['dns']['dnssec_signed'] == 1
+    assert handler.facts['dns']['message_type'] == 'ack'

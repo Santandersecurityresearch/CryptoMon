@@ -92,6 +92,14 @@ CLASSICAL_MARKERS = (
 
 # Symmetric strength before Grover, read off the IANA ciphersuite name.
 SYMMETRIC_BITS = (
+    # First, and deliberately: RFC 4543's ENCR_NULL_AUTH_AES_GMAC is *null
+    # encryption* with a GMAC for integrity, and its IKEv2 transform name is
+    # `ENCR_NULL_AUTH_AES_256_GMAC`. Matching is by substring in this order,
+    # so without this entry `AES_256` wins and an IPsec SA that encrypts
+    # nothing at all is reported as "AES_256, 256 bits, 128 after Grover".
+    # For a tool whose headline distinction is encrypted versus cleartext,
+    # that is the worst single answer it could give.
+    ('NULL_AUTH', 0),
     ('AES_256', 256), ('AES_128', 128), ('CHACHA20', 256),
     ('CAMELLIA_256', 256), ('CAMELLIA_128', 128),
     ('ARIA_256', 256), ('ARIA_128', 128),

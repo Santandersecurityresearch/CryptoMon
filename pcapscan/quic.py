@@ -56,6 +56,9 @@ where they happen:
 **`cryptography` is optional.** `pcapscan` is meant to run on a stock
 `python:3.11-slim` with nothing installed, and it still does: the key
 schedule here is stdlib HMAC, and only AES-ECB and AES-GCM need the package.
+(The AES-ECB is RFC 9001 section 5.4.3's header-protection mask, which is a
+single-block mask generator and not a mode choice this project made -- see
+`_aead.ecb_block`, which is the line static analysers flag.)
 Without it a QUIC flow is still detected, still counted, and still reported
 -- with `quic.handshake_unreadable` saying why there is no `tls` block. That
 is the same contract `pcapscan.sessions` keeps when it cannot parse a
@@ -199,7 +202,36 @@ def _aead():
         return None, None
 
     def ecb_block(key, block):
-        """One AES block, encrypted. The header-protection mask generator."""
+        """
+        One AES block, encrypted. The header-protection mask generator.
+
+        **The ECB below is mandatory, not an oversight.** RFC 9001 section
+        5.4.3 defines header protection for every AES-based cipher suite as
+
+            mask = AES-ECB(hp_key, sample)
+
+        of which the first five bytes are used. Static analysers flag
+        `modes.ECB()` on sight, and in general they are right to: ECB leaks
+        equality between blocks, which is what makes it unusable for a
+        message. None of that applies here. This encrypts a single 16-byte
+        block; the input is a sample of somebody else's ciphertext, not a
+        plaintext; the output is a one-time mask that is XORed and discarded,
+        never stored or transmitted; and `hp_key` is a per-connection secret
+        derived in `initial_keys`. There is no second block for the first to
+        be compared against, so the property ECB fails to provide is not one
+        this use has any need of.
+
+        Nor is there a choice to make. The mask has to be computed exactly as
+        the sender computed it or the packet number does not come back, so
+        any other construction would simply fail to decode QUIC. The
+        ChaCha20 suites use ChaCha20 for the same job (section 5.4.4); this
+        module only ever opens Initial packets, which section 5.2 fixes to
+        AEAD_AES_128_GCM, so AES is the only branch reachable from here.
+
+        For a scanner waiver: RFC 9001 section 5.4.3, single-block mask
+        generation, not confidentiality. The caller is
+        `remove_header_protection`.
+        """
         encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
         return encryptor.update(block) + encryptor.finalize()
 
@@ -490,6 +522,10 @@ def remove_header_protection(buf, header, hp_key, ecb_block=None):
     sample_start = header.pn_offset + SAMPLE_OFFSET
     if sample_start + SAMPLE_LEN > header.end or header.end > len(buf):
         return None, None
+    # `block` is AES-ECB over one 16-byte sample, which is what section 5.4.3
+    # specifies and the only thing that reproduces the sender's mask. See the
+    # docstring on `_aead.ecb_block` for why that is not the ECB misuse a
+    # static analyser reads it as.
     mask = block(hp_key, bytes(buf[sample_start:sample_start + SAMPLE_LEN]))
     # Long headers spend four bits on the packet type and reserved bits, so
     # only the low four are masked; a short header would mask five.
@@ -825,6 +861,10 @@ class QuicHandler:
         self.counts[header.kind] += 1
         if self.version is None and header.kind != 'version_negotiation':
             self.version, self.label = header.version, header.label
+        # Latched from the flow's *current* belief about direction, which
+        # the AEAD tag in `_decrypt` may still overturn. When it does,
+        # `_flip_cids` swaps these, because a record calling the server's
+        # SCID `client_cid` is a wrong answer that looks like a right one.
         if from_client:
             self.client_cid = self.client_cid or header.scid or None
         else:
@@ -884,6 +924,7 @@ class QuicHandler:
                         self.client_key = (key if role
                                            else _reverse(key))
                         self.counts['direction_corrected'] += 1
+                        self._flip_cids()
                     self.odcid = dcid
                     self._pinned = True
                 self._largest_pn[role] = max(self._largest_pn[role],
@@ -897,6 +938,17 @@ class QuicHandler:
         PARSE_STATS['quic_initial_undecryptable'] += 1
         return from_client
 
+    def _flip_cids(self):
+        """
+        Swap the connection IDs after the tag overturns the direction guess.
+
+        `_note` records them before anything has been decrypted, because a
+        version-negotiation or Retry packet may be all a flow ever carries.
+        That means they are recorded against a guess, and when the guess is
+        wrong they are the wrong way round.
+        """
+        self.client_cid, self.server_cid = self.server_cid, self.client_cid
+
     def _candidates(self, header, from_client):
         """
         Connection IDs the Initial keys might come from, best guess first.
@@ -907,12 +959,27 @@ class QuicHandler:
         has been seen -- and if the capture holds none, it cannot be read at
         all. That is a fact about the capture, and it is counted as
         `undecryptable` rather than hidden.
+
+        `header.dcid` is therefore offered twice: first when this datagram is
+        believed to be the client's, and again last as a fallback whatever
+        the belief. The fallback is what saves a capture that starts between
+        the client's Initial and the server's reply: the server's datagram
+        arrives first, `pcapscan.datagrams` reasonably calls *it* the client,
+        and every real client Initial afterwards arrives with
+        `from_client=False`. Without the second offer the candidate list for
+        those is empty and a perfectly readable ClientHello is counted
+        undecryptable -- measured, on a real corpus flow, as
+        `initials_decrypted` 1 -> 0. Trying it costs one key derivation and
+        one AEAD check on a server Initial, where it is the client's SCID and
+        simply will not verify; the 128-bit tag is what makes a wrong guess
+        cheap to make.
         """
         out = []
         for candidate in (header.dcid if from_client else None,
                           self.odcid,
                           bytes.fromhex(self.retry['new_dcid'])
-                          if self.retry else None):
+                          if self.retry else None,
+                          header.dcid):
             if candidate is not None and candidate not in out:
                 out.append(candidate)
         return out
@@ -997,7 +1064,12 @@ class QuicHandler:
                 ('undecryptable_version',
                  'no published salt for this QUIC version'),
                 ('undecryptable', 'no client Initial in the capture')):
-            if counts[name]:
+            # ...but only when *nothing* was read. One injected or
+            # post-Retry Initial that will not open is not a reason to
+            # stamp "no client Initial in the capture" on a record that
+            # carries a full `tls` block and a hostname; a label that
+            # contradicts the data beside it is worse than no label.
+            if counts[name] and not counts['initials_decrypted']:
                 # Why there is no `tls` block, in the record rather than in a
                 # log nobody reads. Same contract as `certificates_der`:
                 # degrade with a label.

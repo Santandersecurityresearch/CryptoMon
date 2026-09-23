@@ -1200,3 +1200,68 @@ def test_real_server_initial_refuses_the_wrong_connection_id():
     assert decrypt_packet(packet, header, wrong) is None
     also_wrong = initial_keys(FIREFOX_ODCID, VERSION_1, True)
     assert decrypt_packet(packet, header, also_wrong) is None
+
+
+# --------------------------------------------------------------------------
+# regressions from the Wave 8 code review
+# --------------------------------------------------------------------------
+def test_a_capture_that_starts_with_the_servers_packet_still_reads_the_hello():
+    """
+    The direction guess being inverted must not lose the ClientHello.
+
+    `pcapscan.datagrams` calls whichever end sent first the client. A capture
+    that begins between the client's Initial and the server's reply inverts
+    that, so every real client Initial afterwards arrives with
+    `from_client=False`. `_candidates` offered `header.dcid` only when
+    `from_client` was already true, so the list came back empty and a
+    perfectly readable Initial was counted `undecryptable` -- measured on a
+    real corpus flow as initials_decrypted 1 -> 0.
+
+    The server's packet here is keyed from a connection ID this capture never
+    saw, which is the whole point: it cannot be decrypted, so it cannot set
+    `odcid`, and the client Initial that follows has nothing to fall back on
+    but its own header. That is the case the fix exists for -- a server
+    packet that *does* decrypt would set `odcid` and hide the defect.
+    """
+    unseen = bytes.fromhex('1122334455667788')
+    handler = QuicHandler()
+    handler.push(0.0, build_initial(unseen, crypto_frame(0, client_hello()),
+                                    from_client=False, pad_to=1200,
+                                    header_dcid=b'\x99' * 8), SERVER, None)
+    handler.push(1.0, build_initial(bytes.fromhex('8394c8f03e515708'),
+                                    crypto_frame(0, client_hello()),
+                                    from_client=True, pad_to=1200),
+                 CLIENT, None)
+    assert handler.counts['initials_decrypted'] >= 1, \
+        'the client Initial became undecryptable once the guess was inverted'
+
+
+def test_the_dcid_stays_a_candidate_whichever_way_the_flow_was_guessed():
+    header = parse_long_header(
+        build_initial(bytes.fromhex('8394c8f03e515708'), crypto_frame(0, client_hello()),
+                      pad_to=1200), 0)
+    assert header is not None
+    handler = QuicHandler()
+    assert header.dcid in handler._candidates(header, True)
+    assert header.dcid in handler._candidates(header, False)
+
+
+def test_unreadable_is_not_claimed_when_an_initial_was_read():
+    """
+    A record with a hostname must not also say the handshake was unreadable.
+
+    One injected or post-Retry Initial that will not open is not "no client
+    Initial in the capture", and a label contradicting the data beside it is
+    worse than no label.
+    """
+    dcid = bytes.fromhex('8394c8f03e515708')
+    handler = QuicHandler()
+    handler.push(0.0, build_initial(dcid, crypto_frame(0, client_hello()), pad_to=1200),
+                 CLIENT, None)
+    handler.push(1.0, build_initial(b'\x00' * 8, b'\x00' * 64, pad_to=1200)
+                 [:60], CLIENT, None)
+    documents = list(handler.finish())
+    assert documents, 'the flow produced no document at all'
+    quic = documents[0]['quic']
+    assert quic['initials_decrypted'] >= 1
+    assert 'handshake_unreadable' not in quic, quic.get('handshake_unreadable')

@@ -181,6 +181,11 @@ def _quic_seeds():
               + _quic_varint(len(plaintext) + 20))
     aad = header + b'\x00\x00\x00\x00'
     packet = bytearray(aad + AESGCM(key).encrypt(iv, plaintext, aad))
+    # Applying header protection the way a real sender does: RFC 9001 section
+    # 5.4.3's mask is AES-ECB over one 16-byte sample of the ciphertext. Not a
+    # mode choice -- any other construction produces a packet `pcapscan.quic`
+    # could not decode, which would make this a seed for nothing. See the
+    # docstring on `pcapscan.quic._aead.ecb_block` for the scanner waiver.
     encryptor = Cipher(algorithms.AES(hp_key), modes.ECB()).encryptor()
     mask = encryptor.update(bytes(packet[len(header) + 4:len(header) + 20]))
     packet[0] ^= mask[0] & 0x0F

@@ -273,3 +273,21 @@ def test_the_summary_is_plain_data():
     summary = analyse(iter_sessions(STREAMS / "tls12_certificate.pcap"))
     assert isinstance(summary, Summary)
     assert json.loads(json.dumps(summary.as_dict()))['readiness']['sessions'] == 1
+
+
+def test_null_encryption_with_a_gmac_is_not_reported_as_aes():
+    """
+    RFC 4543's ENCR_NULL_AUTH_AES_GMAC encrypts nothing.
+
+    It occupies IKEv2's ENCR transform slot and its name contains AES_256,
+    and SYMMETRIC_BITS is matched by substring in declaration order -- so
+    before `NULL_AUTH` was put first, an IPsec SA that encrypted nothing at
+    all was reported as "AES_256, 256 bits, 128 after Grover". For a tool
+    whose headline distinction is encrypted versus cleartext, that is the
+    worst single answer it could give.
+    """
+    from cryptomon.analysis import symmetric_strength
+    label, bits, _grover = symmetric_strength('ENCR_NULL_AUTH_AES_256_GMAC')
+    assert bits == 0, (label, bits)
+    assert symmetric_strength('ENCR_AES_256_GCM_16')[1] == 256
+    assert symmetric_strength('ENCR_AES_256_CBC')[1] == 256

@@ -700,9 +700,7 @@ async def alerts(collection, window, limit=None):
         {'description': '$tls.alerts.description',
          'from_client': '$tls.alerts.from_client'},
         limit, unwind='$tls.alerts')
-    buckets = _sorted([{'name': _alert_name(row.get('_id') or {}),
-                        'count': int(row.get('count') or 0)}
-                       for row in rows])
+    buckets = _sorted([_alert_bucket(row) for row in rows])
     notes = [
         "total is documents; the buckets sum to {0} alerts, because one "
         "handshake can carry more than one.".format(counted),
@@ -715,19 +713,28 @@ async def alerts(collection, window, limit=None):
     return _envelope('alerts', window, documents, buckets, other, notes)
 
 
-def _alert_name(key):
+def _alert_bucket(row):
     """
-    One grouped alert as `handshake_failure (server)`.
+    One grouped alert, with the direction in **both** places it is needed.
 
-    Same spelling as `pcapscan.export._alert_label`, minus the level, which
-    this panel does not group on.
+    In the name, spelled exactly as `pcapscan.export._alert_label` spells it,
+    so a CSV cell and a dashboard bar read the same. And as its own
+    `direction` key, because a consumer that wants to put the sender in its
+    own column should not have to parse it back out of a display string --
+    the dashboard did exactly that and got it wrong, printing "the
+    aggregation is not reporting the direction" directly above rows that
+    plainly said "(server)". Two spellings of one fact is a bug waiting to
+    happen; one fact carried twice, deliberately, is not.
     """
+    key = row.get('_id') or {}
     description = key.get('description')
     name = NONE if description is None else describe_description(description)
+    bucket = {'name': name, 'count': int(row.get('count') or 0)}
     sender = key.get('from_client')
-    if sender is None:
-        return name
-    return '{0} ({1})'.format(name, 'client' if sender else 'server')
+    if sender is not None:
+        bucket['direction'] = 'client' if sender else 'server'
+        bucket['name'] = '{0} ({1})'.format(name, bucket['direction'])
+    return bucket
 
 
 async def ech(collection, window, limit=None):
@@ -796,8 +803,19 @@ async def timeline(collection, window, limit=None, bucket=None):
         if verdict in point['verdicts']:
             point['verdicts'][verdict] += count
 
-    series = _gap_fill(points, seconds)
+    series, dropped = _gap_fill(points, seconds)
     notes = []
+    if dropped:
+        # Said, not swallowed. The series is bounded, so something had to go;
+        # a chart that quietly starts later than it claims to is the kind of
+        # unlabelled missing data this project has twice been caught by.
+        notes.append(
+            "The {0} oldest buckets were dropped to stay within {1} points; "
+            "the series starts at {2:.0f}. A single document with a broken "
+            "timestamp can stretch the span this way -- check `span` on "
+            "/stats/overview if that looks wrong.".format(
+                dropped, MAX_SERIES_POINTS,
+                series[0]['t'] if series else 0))
     if widened:
         notes.append(
             "Buckets were widened to {0} seconds; the window asked for more "
@@ -825,16 +843,27 @@ def _gap_fill(points, seconds):
     Bounded by the data rather than by the window on purpose: a `hours=0`
     request against a collection holding one afternoon should draw that
     afternoon, not two years of zeros leading up to it.
+
+    Returns (series, dropped). When the span is too long to draw, the
+    **oldest** buckets are the ones dropped, not the newest. That direction
+    is the whole point: a single document with a broken `ts` -- epoch 0, or a
+    capture whose clock ran slow -- drags `min(points)` back to 1970, and
+    filling forward from there spends the entire budget on empty buckets and
+    then stops before reaching today. The page would show years of zeros and
+    silently omit the traffic somebody opened it to see. `dropped` is
+    returned rather than swallowed so the caller can say so.
     """
     if not points:
-        return []
-    at = min(points)
-    last = max(points)
+        return [], 0
+    first, last = min(points), max(points)
+    span = int((last - first) // seconds) + 1
+    dropped = max(0, span - MAX_SERIES_POINTS)
+    at = first + dropped * seconds
     series = []
-    while at <= last and len(series) <= MAX_SERIES_POINTS:
+    while at <= last and len(series) < MAX_SERIES_POINTS:
         series.append(points.get(at) or _empty_point(at))
         at += seconds
-    return series
+    return series, dropped
 
 
 def _choose_seconds(window, bucket):

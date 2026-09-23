@@ -260,7 +260,21 @@ class DatagramRouter:
             self._retire(flow)
         self.flows.clear()
         for flow in sorted(self.done, key=lambda f: f.first_ts or 0.0):
-            for document in flow.handler.finish() or ():
+            try:
+                documents = list(flow.handler.finish() or ())
+            except Exception:               # noqa: BLE001
+                # Guarded for the same reason `push` and `_detect` are, and
+                # it matters more here than in either: `finish` is where the
+                # expensive parsing happens -- reassembled CRYPTO bytes split
+                # into handshake messages, a hello parsed, a certificate
+                # chain walked -- all over input somebody else chose. An
+                # unguarded raise here does not cost one datagram, it
+                # propagates out of SessionBuilder.finish() and past the
+                # CLI's `except (OSError, CaptureError)`, so the whole
+                # capture ends in a traceback with no report at all.
+                self.stats['finish_error_' + flow.handler.name] += 1
+                continue
+            for document in documents:
                 document.setdefault('ptype', 'session')
                 document.setdefault('ts', flow.first_ts)
                 document.setdefault(
